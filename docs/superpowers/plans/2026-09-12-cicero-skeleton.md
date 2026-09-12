@@ -89,6 +89,10 @@ Sets up the package and the value types the rest of the plan depends on. The onl
 .DS_Store
 Cicero.app/
 dist/
+
+# Agent scratch: SDD ledger, briefs, reports, review packages.
+.superpowers/
+.claude/worktrees/
 ```
 
 - [ ] **Step 2: Create `Package.swift`**
@@ -2084,7 +2088,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyMonitor: HotkeyMonitor?
     private let transcriber = WhisperKitTranscriber()
     private var modelIsReady = false
-    private var stateObservation: (any NSObjectProtocol)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
@@ -2479,16 +2482,23 @@ import CiceroKit
 @MainActor
 final class HUDWindow {
 
-    private let window: NSWindow
+    private let window: NSPanel
     private let label = NSTextField(labelWithString: "")
     private let dot = NSView()
 
     init() {
-        window = NSWindow(
+        // NSPanel, not NSWindow: `.nonactivatingPanel` is a panel-only style
+        // mask and is inert on a plain NSWindow. Combined with
+        // `becomesKeyOnlyIfNeeded`, this keeps the caret in the app the user
+        // is dictating into — showing the HUD must never steal focus.
+        window = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 220, height: 44),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false)
+        window.becomesKeyOnlyIfNeeded = true
+        window.hidesOnDeactivate = false
+        window.isFloatingPanel = true
         window.isOpaque = false
         window.backgroundColor = .clear
         window.level = .floating
@@ -2496,7 +2506,7 @@ final class HUDWindow {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.hasShadow = true
 
-        let container = NSView(frame: window.contentLayoutRect)
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 44))
         container.wantsLayer = true
         container.layer?.backgroundColor = Palette.marble.cgColor
         container.layer?.cornerRadius = 22
