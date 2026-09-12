@@ -133,7 +133,9 @@ A implementação usa `CGEventTap` em `.keyDown`/`.keyUp` e `.flagsChanged`, o q
 
 A alternativa — inserção direta via Acessibilidade (`kAXSelectedTextAttribute`) — é mais limpa e não toca no clipboard, mas não é suportada por muitos apps (Electron, VS Code, Slack). Confiabilidade universal vence elegância. O protocolo `TextInserter` mantém a porta aberta para adicionar a via AX depois como preferência do usuário.
 
-O atraso da restauração precisa ser calibrado: restaurar cedo demais quebra a colagem; tarde demais deixa o clipboard errado por mais tempo que o necessário. A implementação confirma a colagem observando o `changeCount` do pasteboard antes de restaurar, em vez de confiar apenas num tempo fixo.
+O atraso da restauração precisa ser calibrado: restaurar cedo demais quebra a colagem; tarde demais deixa o clipboard errado por mais tempo que o necessário.
+
+Não há como detectar programaticamente que o app de destino leu o pasteboard — o `changeCount` do macOS incrementa em escrita, nunca em leitura. O atraso é, portanto, necessariamente um valor calibrado. O `changeCount` ainda assim é usado, para outra finalidade: se **outro** processo escreveu no clipboard durante a janela de espera, o `changeCount` terá mudado e a restauração é abortada, para não destruir o que esse processo colocou lá.
 
 ### 5.3 Transcrição
 
@@ -143,7 +145,7 @@ O atraso da restauração precisa ser calibrado: restaurar cedo demais quebra a 
 
 O idioma é deixado em detecção automática, para acomodar o code-switching PT/EN do usuário.
 
-O download do modelo tem UI própria: barra de progresso na primeira execução, e o app permanece utilizável (sem transcrever) enquanto baixa.
+O download do modelo acontece na primeira execução. Enquanto isso, o app permanece aberto e utilizável, e o menu bar mostra o estado de carregamento; o atalho de ditado fica inerte até o modelo estar pronto. Uma barra de progresso detalhada fica para um marco posterior.
 
 ### 5.4 Polimento
 
