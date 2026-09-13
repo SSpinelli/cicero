@@ -106,7 +106,6 @@ public final class DictationEngine {
         }
     }
 
-    /// Happy path only. Task 3 adds the guards and fallbacks.
     public func finishDictation() async {
         guard state == .recording, !isCancelling else { return }
         let myGeneration = generation
@@ -126,12 +125,25 @@ public final class DictationEngine {
         do {
             let audio = try await recorder.stop()
             guard isCurrent(myGeneration) else { return }
+            // A hotkey brushed by accident must insert nothing.
+            guard !audio.isSilent() else {
+                state = .idle
+                return
+            }
             let raw = try await transcriber.transcribe(audio)
             guard isCurrent(myGeneration) else { return }
+            guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                state = .idle
+                return
+            }
             state = .polishing
-            let text = try await polisher.polish(raw, context: context)
+            let text = await polished(raw)
             guard isCurrent(myGeneration) else { return }
+
+            // Golden rule: record the transcript BEFORE attempting insertion,
+            // so a failed paste still leaves the words reachable from the menu.
             lastTranscript = text
+
             state = .inserting
             try await inserter.insert(text)
             guard isCurrent(myGeneration) else { return }
@@ -139,6 +151,16 @@ public final class DictationEngine {
         } catch {
             guard isCurrent(myGeneration) else { return }
             fail(with: error)
+        }
+    }
+
+    /// Polishing is an enhancement, never a gate. If the on-device model fails
+    /// or is unavailable, the raw transcript still reaches the user.
+    private func polished(_ raw: String) async -> String {
+        do {
+            return try await polisher.polish(raw, context: context)
+        } catch {
+            return raw
         }
     }
 
