@@ -57,5 +57,13 @@ let package = Package(
             swiftSettings: testRunnerSwiftSettings,
             linkerSettings: testRunnerLinkerSettings
         ),
+        .target(name: "CiceroPolish", dependencies: ["CiceroKit"]),
+        .executableTarget(
+            name: "CiceroPolishTests",
+            dependencies: ["CiceroPolish", "CiceroKit"],
+            path: "Tests/CiceroPolishTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
     ]
 )
