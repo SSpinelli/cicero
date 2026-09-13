@@ -52,6 +52,13 @@ struct WhisperKitTranscriberTests {
         let transcriber = WhisperKitTranscriber()
         try await transcriber.prepare()
         let text = try await transcriber.transcribe(try spokenAudio("The quick brown fox jumps over the lazy dog."))
+        // Printed deliberately, not left over from debugging: a passing keyword
+        // assertion only tells you the test passed, not whether the audio
+        // pipeline is healthy. Task 4's conversion feeding Whisper a wrong
+        // sample rate or a bad downmix would likely still pass a loose keyword
+        // check while producing plausible-looking nonsense, so the full
+        // transcript stays visible for a human to sanity-check.
+        print("EN TRANSCRIPT: \(text)")
         #expect(text.lowercased().contains("brown fox"))
     }
 
@@ -60,7 +67,15 @@ struct WhisperKitTranscriberTests {
         let transcriber = WhisperKitTranscriber()
         try await transcriber.prepare()
         let text = try await transcriber.transcribe(try spokenAudio("O rato roeu a roupa do rei.", voice: "Luciana"))
-        #expect(text.lowercased().contains("rato"))
+        // See the comment on the English test above for why this is printed.
+        print("PT TRANSCRIPT: \(text)")
+        // Two multi-word fragments spanning the start and end of the sentence,
+        // rather than the single word "rato" — strong enough to fail on a
+        // transcription that got most of the sentence wrong, which is the
+        // failure mode this multilingual-model test exists to catch.
+        let lowercased = text.lowercased()
+        #expect(lowercased.contains("rato roeu"))
+        #expect(lowercased.contains("roupa do rei"))
     }
 
     @Test("transcribing before prepare throws", .tags(.requiresModel))
