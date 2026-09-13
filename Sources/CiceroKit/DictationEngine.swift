@@ -85,8 +85,14 @@ public final class DictationEngine {
         // stranding bug. Each write inside re-checks its generation in case
         // a cancel has since claimed this dictation.
         let task = Task { @MainActor [self] in
-            context = await contextProvider.currentContext()
+            // Assigned only after the ownership check, not before it: the
+            // comment above promises every write re-checks its generation,
+            // and writing `context` first would let a dictation that a cancel
+            // has already superseded leave its app context behind for the
+            // next one to polish with.
+            let capturedContext = await contextProvider.currentContext()
             guard isCurrent(myGeneration) else { return }
+            context = capturedContext
             do {
                 try await recorder.start()
             } catch {
@@ -209,7 +215,19 @@ public final class DictationEngine {
     }
 
     private func fail(with error: Error) {
-        let message = (error as? CiceroError)?.userMessage ?? error.localizedDescription
+        // A `CiceroError` already carries a written pt-BR sentence. Anything
+        // else only has `localizedDescription`, which is routinely English
+        // and framework-shaped ("The operation couldn't be completed…");
+        // dropping that raw into a Portuguese HUD reads like a bug. Framing
+        // it as a system detail keeps the message honest about where the text
+        // came from without hiding it — the user may need it to report the
+        // problem.
+        let message: String
+        if let ciceroError = error as? CiceroError {
+            message = ciceroError.userMessage
+        } else {
+            message = "Falha inesperada (detalhe do sistema: \(error.localizedDescription))"
+        }
         state = .failed(message)
     }
 }

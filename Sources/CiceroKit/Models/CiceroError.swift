@@ -1,5 +1,3 @@
-import Foundation
-
 public enum CiceroError: Error, Equatable, Sendable {
     case recordingFailed(String)
     case transcriptionFailed(String)

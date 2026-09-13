@@ -76,6 +76,13 @@ public final class HotkeyMonitor {
         }
         if let tap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            // Disabling the tap only stops events; the Mach port stays alive
+            // and keeps its receive right until it is invalidated. Dropping
+            // the reference without this leaks the port every start/stop
+            // cycle — cheap today, since `stop()` runs once at teardown, but
+            // it is the kind of leak that only shows up once something starts
+            // cycling the monitor.
+            CFMachPortInvalidate(tap)
         }
         tap = nil
         runLoopSource = nil

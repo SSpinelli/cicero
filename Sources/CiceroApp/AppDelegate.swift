@@ -4,7 +4,6 @@ import CiceroInput
 import CiceroKit
 import CiceroPolish
 import CiceroWhisper
-import Observation
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
