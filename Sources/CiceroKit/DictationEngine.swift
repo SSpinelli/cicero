@@ -34,10 +34,13 @@ public final class DictationEngine {
 
     public func startDictation() async {
         guard isStartable else { return }
+        // Claim the state before any suspension point. Leaving it `.idle` across
+        // these awaits lets a fast tap's finishDictation() observe `.idle`, return
+        // early, and strand the engine in a recording that never stops.
+        state = .recording
         context = await contextProvider.currentContext()
         do {
             try await recorder.start()
-            state = .recording
         } catch {
             fail(with: error)
         }
@@ -63,8 +66,8 @@ public final class DictationEngine {
 
     public func cancelDictation() async {
         guard state == .recording else { return }
-        await recorder.cancel()
         state = .idle
+        await recorder.cancel()
     }
 
     private var isStartable: Bool {

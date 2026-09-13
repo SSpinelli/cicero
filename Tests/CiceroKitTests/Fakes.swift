@@ -10,12 +10,18 @@ final class Box<Value>: @unchecked Sendable {
         get { lock.withLock { storage } }
         set { lock.withLock { storage = newValue } }
     }
+    /// Holds the lock across a read-modify-write so concurrent mutations
+    /// (e.g. appending to an array) can't interleave and lose an update.
+    func mutate(_ body: (inout Value) -> Void) {
+        lock.withLock { body(&storage) }
+    }
 }
 
 struct FakeRecorder: AudioRecorder {
     let buffer: AudioBuffer
     let startError: CiceroError?
     let started = Box(false)
+    let startCount = Box(0)
     let cancelled = Box(false)
 
     init(buffer: AudioBuffer = AudioBuffer(samples: Array(repeating: 0.3, count: 16_000), sampleRate: 16_000),
@@ -25,6 +31,7 @@ struct FakeRecorder: AudioRecorder {
     }
 
     func start() async throws {
+        startCount.mutate { $0 += 1 }
         if let startError { throw startError }
         started.value = true
     }
@@ -66,7 +73,7 @@ struct FakeInserter: TextInserter {
     init(error: CiceroError? = nil) { self.error = error }
     func insert(_ text: String) async throws {
         if let error { throw error }
-        inserted.value.append(text)
+        inserted.mutate { $0.append(text) }
     }
 }
 

@@ -87,4 +87,51 @@ struct DictationEngineHappyPathTests {
         #expect(engine.state == .idle)
         #expect(inserter.inserted.value.isEmpty)
     }
+
+    @Test("two overlapping starts only start the recorder once")
+    func ignoresOverlappingStart() async {
+        let recorder = FakeRecorder()
+        let engine = makeEngine(recorder: recorder)
+        // Neither call is awaited before the other begins, so both run
+        // concurrently and can observe each other's in-flight state.
+        async let first: Void = engine.startDictation()
+        async let second: Void = engine.startDictation()
+        _ = await (first, second)
+        #expect(recorder.startCount.value == 1)
+        #expect(engine.state == .recording)
+    }
+
+    @Test("a fast tap does not strand the engine mid-recording")
+    func fastTapCompletesDictation() async {
+        let inserter = FakeInserter()
+        let engine = makeEngine(inserter: inserter)
+        // Simulates onPress starting a Task and onRelease firing immediately
+        // after: startDictation() is in flight, unawaited, when
+        // finishDictation() is called.
+        let startTask = Task { await engine.startDictation() }
+        await Task.yield()
+        await engine.finishDictation()
+        await startTask.value
+        #expect(engine.state == .idle)
+        #expect(!inserter.inserted.value.isEmpty)
+    }
+
+    @Test("cancels an in-progress recording")
+    func cancelsRecording() async {
+        let recorder = FakeRecorder()
+        let engine = makeEngine(recorder: recorder)
+        await engine.startDictation()
+        await engine.cancelDictation()
+        #expect(engine.state == .idle)
+        #expect(recorder.cancelled.value)
+    }
+
+    @Test("ignores cancel when not recording")
+    func ignoresStrayCancel() async {
+        let recorder = FakeRecorder()
+        let engine = makeEngine(recorder: recorder)
+        await engine.cancelDictation()
+        #expect(engine.state == .idle)
+        #expect(!recorder.cancelled.value)
+    }
 }
