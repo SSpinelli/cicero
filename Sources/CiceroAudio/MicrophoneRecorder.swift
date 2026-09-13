@@ -40,7 +40,8 @@ public actor MicrophoneRecorder: AudioRecorder {
 
     /// State for one in-progress recording. Bundles the engine created for
     /// this attempt with the plumbing that carries its captured samples to
-    /// `samples` in order (see `start()`'s doc comment on ordering).
+    /// `samples` in order (see `start()`'s doc comment on ordering, and on
+    /// why `consumer` must not capture this actor strongly).
     private struct Session {
         let engine: AVAudioEngine
         let continuation: AsyncStream<[Float]>.Continuation
@@ -55,6 +56,29 @@ public actor MicrophoneRecorder: AudioRecorder {
     private var phase: Phase = .idle
 
     public init() {}
+
+    /// Best-effort safety net for the case `stop()`/`cancel()` were never
+    /// called at all — the owner (e.g. `DictationEngine`) was itself
+    /// deallocated, or simply dropped this recorder, while it was
+    /// `.running`. This is the "termination path that does not depend on the
+    /// owner still being alive": it runs exactly when the owner stops being
+    /// alive, by construction of `deinit`.
+    ///
+    /// It cannot use `Self.stopEngine`'s bounded-timeout dance (`deinit`
+    /// can't be `async`), so this is a plain synchronous best-effort stop —
+    /// acceptable here because this path only exists to catch misuse
+    /// (`DictationEngine` always calls `cancel()` during its own teardown;
+    /// see its type-level doc comment), not because it needs the same
+    /// guarantees as the primary `start()`/`stop()`/`cancel()` paths.
+    /// Reading `phase` synchronously here is safe: by the time an actor's
+    /// `deinit` runs, no other code can be concurrently isolated to it.
+    deinit {
+        if case .running(let session) = phase {
+            session.engine.inputNode.removeTap(onBus: 0)
+            session.engine.stop()
+            session.continuation.finish()
+        }
+    }
 
     /// Starts capturing from the default input device.
     ///
@@ -80,10 +104,31 @@ public actor MicrophoneRecorder: AudioRecorder {
     /// silently produce a garbled transcript in Task 5. The tap callback
     /// (invoked serially, one buffer at a time, by CoreAudio) `yield`s
     /// synchronously into the stream; a single consumer task drains it in
-    /// strict FIFO order onto `samples`.
+    /// strict FIFO order onto `samples`. That consumer captures `self`
+    /// *weakly* — see the doc comment on `Session.consumer` for why a strong
+    /// capture there is a live-microphone leak, not just an ordinary cycle.
+    ///
+    /// Calling `start()` while a previous call is still in flight or still
+    /// tearing down does not lie about the outcome: while `.starting`, this
+    /// waits for and mirrors that attempt's real result instead of claiming
+    /// immediate success for a recording that might still fail; while
+    /// `.stopping`, this waits for the teardown to finish (it always settles
+    /// to `.idle`) and then makes a genuine new attempt, instead of claiming
+    /// success for a session that is guaranteed to end up not recording.
     public func start() async throws {
         switch phase {
-        case .starting, .running, .stopping:
+        case .running:
+            return
+        case .starting(let task):
+            switch await task.value {
+            case .success:
+                return
+            case .failure(let error):
+                throw error
+            }
+        case .stopping(let task):
+            await task.value
+            try await start()
             return
         case .idle:
             break
@@ -105,9 +150,22 @@ public actor MicrophoneRecorder: AudioRecorder {
             }
             switch result {
             case .success:
-                let consumer = Task {
+                // `[weak self]` here, not the strong `self` this closure could
+                // otherwise capture from the enclosing `guard let self` scope:
+                // a strongly-captured `self` would be held by a `Task` that
+                // never completes until `teardown()` finishes the stream, and
+                // `self` (via `phase` → `Session.consumer`) would in turn hold
+                // that `Task` — a cycle that survives for as long as nobody
+                // calls `stop()`/`cancel()`. If the owner drops this recorder
+                // mid-recording (e.g. quitting while `DictationEngine` is
+                // `.recording`), that cycle would keep the actor, the engine
+                // and the live input tap alive for the rest of the process —
+                // a hot microphone nothing can ever release. With a weak
+                // capture, dropping the last external reference lets the
+                // actor deinit, and `deinit` below force-stops the engine.
+                let consumer = Task { [weak self] in
                     for await chunk in stream {
-                        await self.append(chunk)
+                        await self?.append(chunk)
                     }
                 }
                 await self.setRunning(Session(engine: sessionEngine, continuation: continuation, consumer: consumer))
