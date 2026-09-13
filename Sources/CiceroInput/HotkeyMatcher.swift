@@ -22,10 +22,27 @@ public struct Hotkey: Sendable, Equatable {
         .maskCommand, .maskShift, .maskControl, .maskAlternate, .maskSecondaryFn,
     ]
 
+    /// Whether this event *starts* the hotkey: the right key with exactly the
+    /// right modifiers. Deliberately strict — this is the rule that stops the
+    /// hotkey firing on unrelated keystrokes, so it is the one used for
+    /// key-down. It is the wrong rule for deciding when a held hotkey *ends*;
+    /// see `modifiersHeld(in:)`.
     public func matches(keyCode: CGKeyCode, flags: CGEventFlags) -> Bool {
         guard keyCode == self.keyCode else { return false }
         let significant = flags.intersection(Self.relevant)
         return significant == modifiers.intersection(Self.relevant)
+    }
+
+    /// Whether `flags` still carries every modifier this hotkey requires.
+    ///
+    /// A subset test, not `matches`'s exact equality, because it answers a
+    /// different question: "is the chord still being held?" A stray Shift
+    /// pressed mid-sentence is no reason to end the user's dictation, but
+    /// lifting Control or Option is — that is the user's hand leaving the
+    /// keyboard.
+    public func modifiersHeld(in flags: CGEventFlags) -> Bool {
+        let required = modifiers.intersection(Self.relevant)
+        return flags.intersection(required) == required
     }
 }
 
@@ -52,9 +69,29 @@ struct HotkeyPressState: Equatable, Sendable {
         return .press
     }
 
-    /// A matching key-up arrived.
+    /// A key-up for the hotkey's key arrived while it was held.
+    ///
+    /// The caller must *not* have required a modifier match: releasing a
+    /// chord lifts its keys in whatever order the hardware happens to scan,
+    /// so by the time Space comes up, Control and Option are routinely
+    /// already gone and the event carries no modifiers at all. Requiring an
+    /// exact match here is what used to strand `isHeld` at `true` forever —
+    /// microphone live, HUD stuck, hotkey dead for the rest of the session.
     mutating func keyUp() -> Action {
         guard isHeld else { return .none }
+        isHeld = false
+        return .release
+    }
+
+    /// The modifier flags changed. `stillSatisfied` is whether the hotkey's
+    /// required modifiers are all still down (`Hotkey.modifiersHeld(in:)`).
+    ///
+    /// Covers the other release order: holding Space while lifting ⌃⌥ ends
+    /// the dictation, because the user's hand has left the chord. Without
+    /// this, that release arrives only as `.flagsChanged` — an event type the
+    /// tap did not even subscribe to — and the dictation would never end.
+    mutating func modifiersChanged(stillSatisfied: Bool) -> Action {
+        guard isHeld, !stillSatisfied else { return .none }
         isHeld = false
         return .release
     }
@@ -64,5 +101,70 @@ struct HotkeyPressState: Equatable, Sendable {
     /// released rather than silently eating the next press.
     mutating func tapReenabled() {
         isHeld = false
+    }
+}
+
+extension HotkeyPressState {
+
+    /// The kinds of tap event that can mean something to the hotkey. A plain
+    /// enum rather than `CGEventType` so the whole routing decision below is
+    /// testable without fabricating events or installing a tap.
+    enum EventKind: Equatable, Sendable {
+        case keyDown
+        case keyUp
+        case flagsChanged
+    }
+
+    /// What one event means, and whether the focused app may see it.
+    struct Outcome: Equatable, Sendable {
+        let action: Action
+        /// Whether to withhold the event from the focused app. True only for
+        /// events that belong to the hotkey itself.
+        let swallowsEvent: Bool
+    }
+
+    /// The complete decision for one tap event. Lives here, not in the tap
+    /// callback, so every branch is exercised by plain unit tests.
+    ///
+    /// The three event kinds use deliberately different matching rules:
+    ///
+    /// - `.keyDown` matches strictly (`Hotkey.matches`). That is what keeps
+    ///   the hotkey from firing on unrelated typing.
+    /// - `.keyUp` matches on key code alone, and only while held. A key-up
+    ///   for a key we swallowed the key-down of is that key's release, no
+    ///   matter which modifiers survived to this instant. The `isHeld`
+    ///   condition is what keeps an ordinary Space key-up — one whose
+    ///   key-down we let through — flowing to the focused app untouched.
+    /// - `.flagsChanged` never swallows. Modifier events belong to the whole
+    ///   system; eating one would leave other apps believing a modifier is
+    ///   still down.
+    mutating func handle(_ kind: EventKind,
+                         keyCode: CGKeyCode,
+                         flags: CGEventFlags,
+                         hotkey: Hotkey) -> Outcome {
+        switch kind {
+        case .keyDown:
+            guard hotkey.matches(keyCode: keyCode, flags: flags) else {
+                return Outcome(action: .none, swallowsEvent: false)
+            }
+            return Outcome(action: keyDown(), swallowsEvent: true)
+
+        case .keyUp:
+            guard keyCode == hotkey.keyCode, isHeld else {
+                return Outcome(action: .none, swallowsEvent: false)
+            }
+            return Outcome(action: keyUp(), swallowsEvent: true)
+
+        case .flagsChanged:
+            let action = modifiersChanged(stillSatisfied: hotkey.modifiersHeld(in: flags))
+            // Not swallowed even when it fires a release. One consequence,
+            // accepted deliberately: the hotkey key-up that arrives after a
+            // modifier-first release is no longer held, so it reaches the
+            // focused app as an unpaired key-up. Apps act on key-down, and
+            // that key-down was swallowed, so nothing is typed — whereas
+            // eating modifier events would corrupt every other app's idea of
+            // which keys are down.
+            return Outcome(action: action, swallowsEvent: false)
+        }
     }
 }

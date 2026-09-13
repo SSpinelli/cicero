@@ -29,7 +29,14 @@ public final class HotkeyMonitor {
     public func start() throws {
         guard tap == nil else { return }
 
-        let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue)
+        // `.flagsChanged` is not optional here: releasing a chord lifts its
+        // keys in hardware scan order, so the modifiers routinely come up
+        // before the key does. Without this bit the tap never learns that ⌃⌥
+        // were released, and a user who holds Space while letting the
+        // modifiers go would keep recording forever.
+        let mask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
         let context = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
@@ -69,38 +76,41 @@ public final class HotkeyMonitor {
         pressState = HotkeyPressState()
     }
 
+    /// Maps one tap event onto `HotkeyPressState`'s pure decision and performs
+    /// its side effects. All of the *judgment* lives in `HotkeyPressState`; the
+    /// only thing decided here is which `EventKind`, if any, a `CGEventType` is.
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        let passthrough = Unmanaged.passUnretained(event)
+
         // macOS disables a tap that takes too long; re-enable it. Any key-up
         // that happened during the dead window never reached us, so drop the
         // held state rather than silently eating the next press.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             pressState.tapReenabled()
-            return Unmanaged.passUnretained(event)
+            return passthrough
         }
 
-        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        guard hotkey.matches(keyCode: keyCode, flags: event.flags) else {
-            return Unmanaged.passUnretained(event)
-        }
-
-        let action: HotkeyPressState.Action
+        let kind: HotkeyPressState.EventKind
         switch type {
-        case .keyDown:
-            action = pressState.keyDown()
-        case .keyUp:
-            action = pressState.keyUp()
-        default:
-            return Unmanaged.passUnretained(event)
+        case .keyDown:      kind = .keyDown
+        case .keyUp:        kind = .keyUp
+        case .flagsChanged: kind = .flagsChanged
+        default:            return passthrough
         }
 
-        switch action {
+        let outcome = pressState.handle(
+            kind,
+            keyCode: CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode)),
+            flags: event.flags,
+            hotkey: hotkey)
+
+        switch outcome.action {
         case .press: onPress()
         case .release: onRelease()
         case .none: break
         }
 
-        // Swallow the event so the hotkey does not reach the focused app.
-        return nil
+        return outcome.swallowsEvent ? nil : passthrough
     }
 }
