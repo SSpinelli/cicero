@@ -11,6 +11,20 @@ final class HUDWindow {
     private let label = NSTextField(labelWithString: "")
     private let dot = NSView()
 
+    /// Auto-dismiss timer for the `.failed` state only.
+    ///
+    /// The panel is borderless, ignores mouse events, and has no close
+    /// control, so a `.failed` HUD left showing has no way for the user to
+    /// dismiss it themselves — unlike the menu, which the user opens on
+    /// their own to check status, this pill is parked over their screen
+    /// uninvited. `DictationEngine` correctly holds `state == .failed` until
+    /// the next dictation (that's load-bearing for the menu), so the fix
+    /// lives entirely here in presentation: schedule a delayed `hide()`
+    /// whenever a failure is shown, and cancel it on every other path so a
+    /// stale timer from a past failure can never hide a HUD that a new
+    /// dictation just raised.
+    private var autoHideTask: Task<Void, Never>?
+
     init() {
         // NSPanel, not NSWindow: `.nonactivatingPanel` is a panel-only style
         // mask and is inert on a plain NSWindow. Combined with
@@ -52,13 +66,31 @@ final class HUDWindow {
     }
 
     func show(state: DictationState) {
+        // Cancel any pending auto-hide unconditionally before deciding
+        // whether to schedule a new one: without this, a timer armed by a
+        // previous `.failed` state could fire mid-recording and hide a HUD
+        // that should still be on screen, leaving the user speaking with no
+        // feedback at all.
+        autoHideTask?.cancel()
+        autoHideTask = nil
+
         label.stringValue = caption(for: state)
         dot.layer?.backgroundColor = color(for: state).cgColor
         position()
         window.orderFrontRegardless()
+
+        if case .failed = state {
+            autoHideTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled else { return }
+                self?.hide()
+            }
+        }
     }
 
     func hide() {
+        autoHideTask?.cancel()
+        autoHideTask = nil
         window.orderOut(nil)
     }
 

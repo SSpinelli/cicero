@@ -125,6 +125,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let previous = self.actionTask
                 self.actionTask = Task { @MainActor in
                     await previous?.value
+                    // Unstructured, not linked to this task's own
+                    // cancellation via `withTaskCancellationHandler` or
+                    // similar: nothing in this file ever cancels
+                    // `actionTask`, and `finishDictation()` below cannot
+                    // throw (see its doc comment), so today the ticker is
+                    // always reached and cancelled by the line below. If a
+                    // future teardown-on-quit hook starts cancelling
+                    // `actionTask`, that cancellation would not propagate to
+                    // `ticker` — it would keep polling until
+                    // `finishDictation()` itself returns rather than
+                    // stopping immediately.
                     let ticker = Task { @MainActor [weak self] in
                         while !Task.isCancelled {
                             self?.syncHUD()
