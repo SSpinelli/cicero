@@ -1697,7 +1697,7 @@ import CiceroKit
 @testable import CiceroInput
 
 @Suite("ClipboardTextInserter clipboard handling")
-struct ClipboardSnapshotTests {
+struct ClipboardTextInserterTests {
 
     private func makeScratchPasteboard() -> NSPasteboard {
         NSPasteboard(name: NSPasteboard.Name("br.com.cicero.tests.\(UUID().uuidString)"))
