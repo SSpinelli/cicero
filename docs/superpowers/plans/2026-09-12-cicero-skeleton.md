@@ -17,6 +17,9 @@ These apply to every task. Do not restate them per task; they are always in forc
 - **Deployment target:** macOS 26.0. The machine runs macOS 26.6.2.
 - **No Xcode.** Only Command Line Tools are installed. `xcodebuild` does not exist. Every build, test, and package step runs through `swift` CLI. Never write a step that requires Xcode.
 - **Swift 6 strict concurrency** is enabled. All protocol types crossing module boundaries are `Sendable`.
+- **Never run `swift test`. It silently does nothing on this machine.** SwiftPM compiles a `.xctest` bundle that only Xcode's `xctest` binary can load; without Xcode it builds, links, prints `Build complete!` and exits 0 **without running a single test**. A green `swift test` here is not evidence of anything.
+  Tests are therefore **executable targets**, not test targets: each declares `@main` calling `Testing.__swiftPMEntryPoint()`, lives under `Tests/<Name>/` via an explicit `path:`, and is run with `swift run`. Always invoke them through **`./Scripts/test.sh [filter]`**, which runs every runner that exists and exits non-zero if any test fails. This was verified end to end: a deliberately failing expectation reports the failure and exits 1.
+  The Swift Testing framework is not on the default search path for non-test targets under Command Line Tools, so each runner target needs the framework and rpath flags defined once in `Package.swift` (Task 1). Reuse that shared definition; never retype the paths.
 - **Whisper model:** `large-v3-turbo`. Do not substitute a smaller model — the smaller fast ones are English-only and the user dictates mixed Portuguese and English.
 - **Transcription language:** auto-detect. The user code-switches between pt-BR and English mid-sentence.
 - **Default hotkey:** `⌃⌥Space` (control + option + space). Configurable, but this is the shipped default. Do not default to `fn`.
@@ -58,6 +61,8 @@ These apply to every task. Do not restate them per task; they are always in forc
 | `Tests/CiceroKitTests/*` | Engine + model tests with fakes |
 | `Tests/CiceroPolishTests/*` | Chunker + polisher tests |
 | `Tests/CiceroInputTests/*` | Matcher + clipboard tests |
+| `Tests/<Name>/Runner.swift` | One per test target: `@main` entry point into Swift Testing |
+| `Scripts/test.sh` | Runs every test runner; optional filter argument |
 | `Scripts/bundle.sh` | Build, assemble `Cicero.app`, sign |
 | `Scripts/create-signing-identity.sh` | One-time stable self-signed cert |
 
@@ -70,6 +75,8 @@ Sets up the package and the value types the rest of the plan depends on. The onl
 **Files:**
 - Create: `.gitignore`
 - Create: `Package.swift`
+- Create: `Tests/CiceroKitTests/Runner.swift`
+- Create: `Scripts/test.sh`
 - Create: `Sources/CiceroKit/Models/AudioBuffer.swift`
 - Create: `Sources/CiceroKit/Models/DictationState.swift`
 - Create: `Sources/CiceroKit/Models/DictationContext.swift`
@@ -78,7 +85,8 @@ Sets up the package and the value types the rest of the plan depends on. The onl
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `AudioBuffer(samples:sampleRate:)` with `.duration: TimeInterval` and `.isSilent(threshold: Float = 0.01) -> Bool`; `DictationState` enum with cases `idle`, `recording`, `transcribing`, `polishing`, `inserting`, `failed(String)`; `DictationContext(appName:bundleIdentifier:)` with static `.unknown`; `CiceroError` enum.
+- Produces: `AudioBuffer(samples:sampleRate:)` with `.duration: TimeInterval` and `.isSilent(threshold: Float = 0.01) -> Bool`; `DictationState` enum with cases `idle`, `recording`, `transcribing`, `polishing`, `inserting`, `failed(String)`; `DictationContext(appName:bundleIdentifier:)` with static `.unknown`; `CiceroError` enum with cases `recordingFailed(String)`, `transcriptionFailed(String)`, `polishingFailed(String)`, `insertionBlockedBySecureInput`, `insertionFailed(String)`, `accessibilityNotGranted`, and a `userMessage` property.
+- Produces (test harness every later task depends on): the `testRunnerSwiftSettings` and `testRunnerLinkerSettings` constants in `Package.swift`, the `Runner.swift` entry-point pattern, and `Scripts/test.sh`.
 
 - [ ] **Step 1: Create `.gitignore`**
 
@@ -89,25 +97,114 @@ Sets up the package and the value types the rest of the plan depends on. The onl
 .DS_Store
 Cicero.app/
 dist/
+
+# Agent scratch: SDD ledger, briefs, reports, review packages.
+.superpowers/
+.claude/worktrees/
 ```
 
-- [ ] **Step 2: Create `Package.swift`**
+- [ ] **Step 2: Create `Package.swift` and the test harness**
 
-Only `CiceroKit` and its tests exist so far. Later tasks add targets to this same file.
+Only `CiceroKit` and its runner exist so far. Later tasks add targets to this same file and reuse the two settings constants defined here.
+
+`Package.swift`:
 
 ```swift
 // swift-tools-version: 6.0
 import PackageDescription
+
+// Swift Testing ships with the Command Line Tools, but its framework is only on
+// the search path for `testTarget`s — and a testTarget is useless on this
+// machine, because running one requires Xcode's `xctest` binary. Test targets
+// are therefore plain executables with an @main entry point, and they need
+// these flags to find Swift Testing at compile time and load it at run time.
+// Defined once here; every runner target reuses them.
+let testingFrameworks = "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"
+let testingInteropLibs = "/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
+
+let testRunnerSwiftSettings: [SwiftSetting] = [
+    .unsafeFlags(["-F", testingFrameworks])
+]
+
+let testRunnerLinkerSettings: [LinkerSetting] = [
+    .unsafeFlags([
+        "-F", testingFrameworks,
+        "-framework", "Testing",
+        "-Xlinker", "-rpath", "-Xlinker", testingFrameworks,
+        "-Xlinker", "-rpath", "-Xlinker", testingInteropLibs,
+    ])
+]
 
 let package = Package(
     name: "Cicero",
     platforms: [.macOS("26.0")],
     targets: [
         .target(name: "CiceroKit"),
-        .testTarget(name: "CiceroKitTests", dependencies: ["CiceroKit"]),
+        .executableTarget(
+            name: "CiceroKitTests",
+            dependencies: ["CiceroKit"],
+            path: "Tests/CiceroKitTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
     ]
 )
 ```
+
+`Tests/CiceroKitTests/Runner.swift` — the entry point. Every test target gets one of these, identical but for the struct name. The file must not be called `main.swift`, which would make SwiftPM treat it as top-level code and conflict with `@main`.
+
+```swift
+import Testing
+
+@main
+struct CiceroKitTestRunner {
+    static func main() async {
+        await Testing.__swiftPMEntryPoint() as Never
+    }
+}
+```
+
+`Scripts/test.sh` — the only way tests are ever run in this project.
+
+```bash
+#!/usr/bin/env bash
+# Runs every Cicero test runner. Optional first argument filters by test name.
+#
+# `swift test` is NOT usable on this machine: without Xcode there is no `xctest`
+# binary to load the bundle SwiftPM builds, so it exits 0 having run nothing.
+# The runners are executables instead, and this script drives them.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+FILTER="${1:-}"
+RUNNERS=(CiceroKitTests CiceroAudioTests CiceroWhisperTests CiceroPolishTests CiceroInputTests)
+
+ran=0
+failed=0
+for runner in "${RUNNERS[@]}"; do
+    [ -d "Tests/$runner" ] || continue
+    ran=$((ran + 1))
+    echo "── $runner"
+    if [ -n "$FILTER" ]; then
+        swift run "$runner" --filter "$FILTER" || failed=$((failed + 1))
+    else
+        swift run "$runner" || failed=$((failed + 1))
+    fi
+done
+
+if [ "$ran" -eq 0 ]; then
+    echo "Nenhum runner de teste encontrado." >&2
+    exit 1
+fi
+if [ "$failed" -gt 0 ]; then
+    echo "FALHOU: $failed de $ran runners." >&2
+    exit 1
+fi
+echo "OK: $ran runner(s)."
+```
+
+Make it executable: `chmod +x Scripts/test.sh`
 
 - [ ] **Step 3: Write the failing test**
 
@@ -154,7 +251,7 @@ struct AudioBufferTests {
 
 - [ ] **Step 4: Run the test and verify it fails**
 
-Run: `swift test --filter AudioBuffer`
+Run: `./Scripts/test.sh AudioBuffer`
 Expected: FAIL — compile error, `cannot find 'AudioBuffer' in scope`.
 
 - [ ] **Step 5: Write the domain models**
@@ -255,14 +352,14 @@ public enum CiceroError: Error, Equatable, Sendable {
 
 - [ ] **Step 6: Run the test and verify it passes**
 
-Run: `swift test --filter AudioBuffer`
+Run: `./Scripts/test.sh AudioBuffer`
 Expected: PASS, 5 tests.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add .gitignore Package.swift Sources/CiceroKit Tests/CiceroKitTests
-git commit -m "Add package scaffolding and CiceroKit domain models"
+git add .gitignore Package.swift Scripts Sources/CiceroKit Tests/CiceroKitTests
+git commit -m "Add package scaffolding, test harness and CiceroKit domain models"
 ```
 
 ---
@@ -494,7 +591,7 @@ struct DictationEngineHappyPathTests {
 
 - [ ] **Step 4: Run the test and verify it fails**
 
-Run: `swift test --filter DictationEngine`
+Run: `./Scripts/test.sh DictationEngine`
 Expected: FAIL — `cannot find 'DictationEngine' in scope`.
 
 - [ ] **Step 5: Write the engine**
@@ -587,7 +684,7 @@ public final class DictationEngine {
 
 - [ ] **Step 6: Run the test and verify it passes**
 
-Run: `swift test --filter DictationEngine`
+Run: `./Scripts/test.sh DictationEngine`
 Expected: PASS, 8 tests.
 
 - [ ] **Step 7: Commit**
@@ -713,7 +810,7 @@ struct DictationEngineErrorTests {
 
 - [ ] **Step 2: Run the test and verify it fails**
 
-Run: `swift test --filter DictationEngineError`
+Run: `./Scripts/test.sh DictationEngineError`
 
 Expected: FAIL, exactly 3 of the 7 tests:
 - `polisherFailureInsertsRawText` — Task 2 lets the polisher's error propagate, so nothing is inserted
@@ -724,25 +821,40 @@ The other 4 pass already; they lock in behavior Task 2 got right, so it cannot r
 
 - [ ] **Step 3: Add the guards and the polishing fallback**
 
-In `Sources/CiceroKit/DictationEngine.swift`, replace the body of `finishDictation()` and add the `polished(_:)` helper below `cancelDictation()`:
+⚠️ **Do not replace `finishDictation()` wholesale.** Task 2 went through three review rounds hardening this method's concurrency, and its body now carries a generation-ownership check after every suspension point. Overwriting it with a simpler version silently reverts all of that. You are **inserting three things** into the existing structure, leaving every `guard isCurrent(myGeneration)` exactly where it is:
+
+1. a silence guard immediately after the existing `isCurrent` check that follows `recorder.stop()`
+2. a blank-transcript guard immediately after the existing `isCurrent` check that follows `transcriber.transcribe(...)`
+3. a call to a new `polished(_:)` helper in place of the direct `polisher.polish(...)` call
+
+The result should read exactly like this — note that every generation guard from Task 2 survives:
 
 ```swift
     public func finishDictation() async {
-        guard state == .recording else { return }
+        guard state == .recording, !isCancelling else { return }
+        let myGeneration = generation
+        let task = startTask
+        // Never stop a recorder that has not finished starting.
+        await task?.value
+        guard isCurrent(myGeneration), state == .recording, !isCancelling else { return }
         state = .transcribing
         do {
             let audio = try await recorder.stop()
+            guard isCurrent(myGeneration) else { return }
+            // A hotkey brushed by accident must insert nothing.
             guard !audio.isSilent() else {
                 state = .idle
                 return
             }
             let raw = try await transcriber.transcribe(audio)
+            guard isCurrent(myGeneration) else { return }
             guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 state = .idle
                 return
             }
             state = .polishing
             let text = await polished(raw)
+            guard isCurrent(myGeneration) else { return }
 
             // Golden rule: record the transcript BEFORE attempting insertion,
             // so a failed paste still leaves the words reachable from the menu.
@@ -750,8 +862,10 @@ In `Sources/CiceroKit/DictationEngine.swift`, replace the body of `finishDictati
 
             state = .inserting
             try await inserter.insert(text)
+            guard isCurrent(myGeneration) else { return }
             state = .idle
         } catch {
+            guard isCurrent(myGeneration) else { return }
             fail(with: error)
         }
     }
@@ -767,9 +881,13 @@ In `Sources/CiceroKit/DictationEngine.swift`, replace the body of `finishDictati
     }
 ```
 
+Leave `startDictation()`, `cancelDictation()`, `isStartable`, `isCurrent(_:)` and `fail(with:)` untouched.
+
+After making the change, run the Task 2 concurrency tests as well as your own — `./Scripts/test.sh DictationEngine` covers both — and confirm none of them regressed. A Task 2 test failing is the signal that you overwrote the concurrency model rather than adding to it.
+
 - [ ] **Step 4: Run the full test suite and verify it passes**
 
-Run: `swift test`
+Run: `./Scripts/test.sh`
 Expected: PASS, all tests across `AudioBuffer`, `DictationEngine happy path`, and `DictationEngine error handling`.
 
 - [ ] **Step 5: Commit**
@@ -800,7 +918,26 @@ Add to `targets:`:
 
 ```swift
         .target(name: "CiceroAudio", dependencies: ["CiceroKit"]),
-        .testTarget(name: "CiceroAudioTests", dependencies: ["CiceroAudio", "CiceroKit"]),
+        .executableTarget(
+            name: "CiceroAudioTests",
+            dependencies: ["CiceroAudio", "CiceroKit"],
+            path: "Tests/CiceroAudioTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
+```
+
+Also create `Tests/CiceroAudioTests/Runner.swift` — the same entry point Task 1 established, with a distinct struct name:
+
+```swift
+import Testing
+
+@main
+struct CiceroAudioTestRunner {
+    static func main() async {
+        await Testing.__swiftPMEntryPoint() as Never
+    }
+}
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -843,7 +980,7 @@ struct MicrophoneRecorderTests {
 
 - [ ] **Step 3: Run the test and verify it fails**
 
-Run: `swift test --filter MicrophoneRecorder`
+Run: `./Scripts/test.sh MicrophoneRecorder`
 Expected: FAIL — `cannot find 'MicrophoneRecorder' in scope`.
 
 - [ ] **Step 4: Write the recorder**
@@ -954,7 +1091,7 @@ public actor MicrophoneRecorder: AudioRecorder {
 
 - [ ] **Step 5: Run the test and verify it passes**
 
-Run: `swift test --filter MicrophoneRecorder`
+Run: `./Scripts/test.sh MicrophoneRecorder`
 
 The first run triggers a macOS microphone permission prompt for your terminal. Grant it, then run again.
 
@@ -962,7 +1099,7 @@ Expected: PASS, 2 tests. If `recordsAtWhisperFormat` reports a duration outside 
 
 - [ ] **Step 6: Verify the default test run is unaffected**
 
-Run: `swift test`
+Run: `./Scripts/test.sh`
 Expected: PASS. Microphone tests run here too; that is fine on the dev machine. The tag exists so CI can exclude them later with `--skip-tags requiresMicrophone`.
 
 - [ ] **Step 7: Commit**
@@ -1004,7 +1141,26 @@ and to `targets:`:
             "CiceroKit",
             .product(name: "WhisperKit", package: "WhisperKit"),
         ]),
-        .testTarget(name: "CiceroWhisperTests", dependencies: ["CiceroWhisper", "CiceroKit"]),
+        .executableTarget(
+            name: "CiceroWhisperTests",
+            dependencies: ["CiceroWhisper", "CiceroKit"],
+            path: "Tests/CiceroWhisperTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
+```
+
+Also create `Tests/CiceroWhisperTests/Runner.swift`:
+
+```swift
+import Testing
+
+@main
+struct CiceroWhisperTestRunner {
+    static func main() async {
+        await Testing.__swiftPMEntryPoint() as Never
+    }
+}
 ```
 
 - [ ] **Step 2: Resolve the dependency and record the version**
@@ -1089,7 +1245,7 @@ struct WhisperKitTranscriberTests {
 
 - [ ] **Step 4: Run the test and verify it fails**
 
-Run: `swift test --filter WhisperKitTranscriber`
+Run: `./Scripts/test.sh WhisperKitTranscriber`
 Expected: FAIL — `cannot find 'WhisperKitTranscriber' in scope`.
 
 - [ ] **Step 5: Write the transcriber**
@@ -1144,7 +1300,7 @@ public actor WhisperKitTranscriber: Transcriber {
 
 - [ ] **Step 6: Run the test and verify it passes**
 
-Run: `swift test --filter WhisperKitTranscriber`
+Run: `./Scripts/test.sh WhisperKitTranscriber`
 
 The first run downloads roughly 1.5 GB. Expect several minutes.
 
@@ -1179,7 +1335,26 @@ Two implementations behind one protocol: the Apple on-device model, and a passth
 
 ```swift
         .target(name: "CiceroPolish", dependencies: ["CiceroKit"]),
-        .testTarget(name: "CiceroPolishTests", dependencies: ["CiceroPolish", "CiceroKit"]),
+        .executableTarget(
+            name: "CiceroPolishTests",
+            dependencies: ["CiceroPolish", "CiceroKit"],
+            path: "Tests/CiceroPolishTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
+```
+
+Also create `Tests/CiceroPolishTests/Runner.swift`:
+
+```swift
+import Testing
+
+@main
+struct CiceroPolishTestRunner {
+    static func main() async {
+        await Testing.__swiftPMEntryPoint() as Never
+    }
+}
 ```
 
 - [ ] **Step 2: Write the failing chunker test**
@@ -1240,7 +1415,7 @@ struct TextChunkerTests {
 
 - [ ] **Step 3: Run the test and verify it fails**
 
-Run: `swift test --filter TextChunker`
+Run: `./Scripts/test.sh TextChunker`
 Expected: FAIL — `cannot find 'TextChunker' in scope`.
 
 - [ ] **Step 4: Write the chunker**
@@ -1299,7 +1474,7 @@ public enum TextChunker {
 
 - [ ] **Step 5: Run the chunker test and verify it passes**
 
-Run: `swift test --filter TextChunker`
+Run: `./Scripts/test.sh TextChunker`
 Expected: PASS, 6 tests.
 
 - [ ] **Step 6: Write the passthrough polisher**
@@ -1374,7 +1549,7 @@ struct PolisherTests {
 
 - [ ] **Step 8: Run the test and verify it fails**
 
-Run: `swift test --filter Polishers`
+Run: `./Scripts/test.sh Polishers`
 Expected: FAIL — `cannot find 'FoundationModelsPolisher' in scope`.
 
 - [ ] **Step 9: Write the FoundationModels polisher**
@@ -1459,7 +1634,7 @@ public struct FoundationModelsPolisher: TextPolisher {
 
 - [ ] **Step 10: Run the test and verify it passes**
 
-Run: `swift test --filter Polishers`
+Run: `./Scripts/test.sh Polishers`
 Expected: PASS, 4 tests. If the two tagged tests are skipped, Apple Intelligence is off; enable it in System Settings and re-run, since the app's primary polisher depends on it.
 
 - [ ] **Step 11: Commit**
@@ -1489,7 +1664,26 @@ Inserts text into whatever app is frontmost, and refuses to do so when a passwor
 
 ```swift
         .target(name: "CiceroInput", dependencies: ["CiceroKit"]),
-        .testTarget(name: "CiceroInputTests", dependencies: ["CiceroInput", "CiceroKit"]),
+        .executableTarget(
+            name: "CiceroInputTests",
+            dependencies: ["CiceroInput", "CiceroKit"],
+            path: "Tests/CiceroInputTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
+```
+
+Also create `Tests/CiceroInputTests/Runner.swift`:
+
+```swift
+import Testing
+
+@main
+struct CiceroInputTestRunner {
+    static func main() async {
+        await Testing.__swiftPMEntryPoint() as Never
+    }
+}
 ```
 
 - [ ] **Step 2: Write the failing test**
@@ -1503,7 +1697,7 @@ import CiceroKit
 @testable import CiceroInput
 
 @Suite("ClipboardTextInserter clipboard handling")
-struct ClipboardSnapshotTests {
+struct ClipboardTextInserterTests {
 
     private func makeScratchPasteboard() -> NSPasteboard {
         NSPasteboard(name: NSPasteboard.Name("br.com.cicero.tests.\(UUID().uuidString)"))
@@ -1584,7 +1778,7 @@ struct ClipboardSnapshotTests {
 
 - [ ] **Step 3: Run the test and verify it fails**
 
-Run: `swift test --filter ClipboardTextInserter`
+Run: `./Scripts/test.sh ClipboardTextInserter`
 Expected: FAIL — `cannot find 'ClipboardTextInserter' in scope`.
 
 - [ ] **Step 4: Write the inserter**
@@ -1719,12 +1913,12 @@ public struct WorkspaceContextProvider: ContextProvider {
 
 - [ ] **Step 5: Run the test and verify it passes**
 
-Run: `swift test --filter ClipboardTextInserter`
+Run: `./Scripts/test.sh ClipboardTextInserter`
 Expected: PASS, 4 tests.
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `swift test`
+Run: `./Scripts/test.sh`
 Expected: PASS across all suites.
 
 - [ ] **Step 7: Commit**
@@ -1804,7 +1998,7 @@ struct HotkeyTests {
 
 - [ ] **Step 2: Run the test and verify it fails**
 
-Run: `swift test --filter Hotkey`
+Run: `./Scripts/test.sh Hotkey`
 Expected: FAIL — `cannot find 'Hotkey' in scope`.
 
 - [ ] **Step 3: Write the matcher**
@@ -1846,7 +2040,7 @@ public struct Hotkey: Sendable, Equatable {
 
 - [ ] **Step 4: Run the test and verify it passes**
 
-Run: `swift test --filter Hotkey`
+Run: `./Scripts/test.sh Hotkey`
 Expected: PASS, 6 tests.
 
 - [ ] **Step 5: Write the monitor**
@@ -1959,7 +2153,7 @@ public final class HotkeyMonitor {
 
 - [ ] **Step 6: Run the full suite**
 
-Run: `swift test`
+Run: `./Scripts/test.sh`
 Expected: PASS. `HotkeyMonitor` has no unit test — an event tap cannot be honestly unit tested; it is verified end-to-end in Task 10.
 
 - [ ] **Step 7: Commit**
@@ -2084,7 +2278,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyMonitor: HotkeyMonitor?
     private let transcriber = WhisperKitTranscriber()
     private var modelIsReady = false
-    private var stateObservation: (any NSObjectProtocol)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
@@ -2241,7 +2434,7 @@ application.run()
 
 - [ ] **Step 6: Verify it builds and the suite still passes**
 
-Run: `swift build && swift test`
+Run: `swift build && ./Scripts/test.sh`
 Expected: build succeeds, all tests pass.
 
 - [ ] **Step 7: Commit**
@@ -2440,7 +2633,7 @@ de microfone e de Acessibilidade.
 ## Testes
 
 ```bash
-swift test
+./Scripts/test.sh
 ```
 ```
 
@@ -2479,16 +2672,23 @@ import CiceroKit
 @MainActor
 final class HUDWindow {
 
-    private let window: NSWindow
+    private let window: NSPanel
     private let label = NSTextField(labelWithString: "")
     private let dot = NSView()
 
     init() {
-        window = NSWindow(
+        // NSPanel, not NSWindow: `.nonactivatingPanel` is a panel-only style
+        // mask and is inert on a plain NSWindow. Combined with
+        // `becomesKeyOnlyIfNeeded`, this keeps the caret in the app the user
+        // is dictating into — showing the HUD must never steal focus.
+        window = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 220, height: 44),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false)
+        window.becomesKeyOnlyIfNeeded = true
+        window.hidesOnDeactivate = false
+        window.isFloatingPanel = true
         window.isOpaque = false
         window.backgroundColor = .clear
         window.level = .floating
@@ -2496,7 +2696,7 @@ final class HUDWindow {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.hasShadow = true
 
-        let container = NSView(frame: window.contentLayoutRect)
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 44))
         container.wantsLayer = true
         container.layer?.backgroundColor = Palette.marble.cgColor
         container.layer?.cornerRadius = 22
@@ -2560,38 +2760,22 @@ final class HUDWindow {
 
 - [ ] **Step 2: Show the HUD from the app delegate**
 
-In `Sources/CiceroApp/AppDelegate.swift`, add the property beside the others:
+⚠️ **Do not rewrite the hotkey closures.** Task 9 went through two review rounds on this file. The closures now chain each action onto the previous one (`await previous?.value`) because Swift does not guarantee ordering between unstructured tasks, and without that chaining a fast tap can run `finishDictation()` before `startDictation()` and strand the engine recording forever. Replacing them with the simpler shape would silently reintroduce that bug.
+
+Also note `refreshStatusItem()` **no longer exists**: Task 9 made `AppDelegate` an `NSMenuDelegate` and rebuilds the menu in `menuNeedsUpdate(_:)`, so the menu now refreshes itself whenever the user opens it. The HUD is the only thing you need to drive.
+
+Add the property beside the others:
 
 ```swift
     private let hud = HUDWindow()
 ```
 
-Then replace the two hotkey closures inside `buildEngine()` with versions that drive the HUD:
+Add this method to the class — it touches only the HUD:
 
 ```swift
-        hotkeyMonitor = HotkeyMonitor(
-            hotkey: .defaultHotkey,
-            onPress: { [weak self] in
-                guard let self, self.modelIsReady else { return }
-                Task {
-                    await self.engine?.startDictation()
-                    self.syncUI()
-                }
-            },
-            onRelease: { [weak self] in
-                guard let self else { return }
-                Task {
-                    await self.engine?.finishDictation()
-                    self.syncUI()
-                }
-            })
-```
-
-And add this method to the class:
-
-```swift
-    private func syncUI() {
-        refreshStatusItem()
+    /// The menu refreshes itself via `menuNeedsUpdate(_:)`, so only the HUD
+    /// needs pushing.
+    private func syncHUD() {
         guard let state = engine?.state else { return }
         switch state {
         case .idle:
@@ -2602,31 +2786,49 @@ And add this method to the class:
     }
 ```
 
+Then add HUD calls **inside the existing chained tasks**, leaving the chaining itself untouched:
+
+```swift
+            onPress: { [weak self] in
+                guard let self, case .ready = self.modelLoadState else { return }
+                let previous = self.actionTask
+                self.actionTask = Task { @MainActor in
+                    await previous?.value
+                    await self.engine?.startDictation()
+                    self.syncHUD()
+                }
+            },
+```
+
 - [ ] **Step 3: Drive the HUD through the whole dictation, not just its ends**
 
-`finishDictation()` moves through transcribing, polishing and inserting before returning, so the two calls above only show the first and last state. Replace the `onRelease` closure with one that polls while the engine works:
+`finishDictation()` moves through transcribing, polishing and inserting before returning, so a single call after it shows only the last state. Real WhisperKit timings put that window at tens of seconds, so the HUD must track it. Poll while the engine works, again keeping the chaining:
 
 ```swift
             onRelease: { [weak self] in
                 guard let self else { return }
-                Task {
-                    let ticker = Task { [weak self] in
+                let previous = self.actionTask
+                self.actionTask = Task { @MainActor in
+                    await previous?.value
+                    let ticker = Task { @MainActor [weak self] in
                         while !Task.isCancelled {
-                            self?.syncUI()
+                            self?.syncHUD()
                             try? await Task.sleep(for: .milliseconds(120))
                         }
                     }
                     await self.engine?.finishDictation()
                     ticker.cancel()
-                    self.syncUI()
+                    self.syncHUD()
                 }
             })
 ```
 
+The ticker must be cancelled on every exit from that task, including a thrown error, or it polls forever and the HUD never hides.
+
 - [ ] **Step 4: Rebuild and verify**
 
 ```bash
-swift build && swift test && ./Scripts/bundle.sh && open dist/Cicero.app
+swift build && ./Scripts/test.sh && ./Scripts/bundle.sh && open dist/Cicero.app
 ```
 
 Expected: build and tests pass. Then verify by hand:

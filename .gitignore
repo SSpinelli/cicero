@@ -1,0 +1,10 @@
+.build/
+.swiftpm/
+*.xcodeproj
+.DS_Store
+Cicero.app/
+dist/
+
+# Agent scratch: SDD ledger, briefs, reports, review packages.
+.superpowers/
+.claude/worktrees/
