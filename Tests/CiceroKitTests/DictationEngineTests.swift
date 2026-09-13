@@ -98,13 +98,15 @@ struct DictationEngineHappyPathTests {
         async let second: Void = engine.startDictation()
         _ = await (first, second)
         #expect(recorder.startCount.value == 1)
+        #expect(recorder.callLog.value == ["start"])
         #expect(engine.state == .recording)
     }
 
-    @Test("a fast tap does not strand the engine mid-recording")
+    @Test("a fast tap does not strand the engine, and never stops a recorder that has not started")
     func fastTapCompletesDictation() async {
+        let recorder = FakeRecorder()
         let inserter = FakeInserter()
-        let engine = makeEngine(inserter: inserter)
+        let engine = makeEngine(recorder: recorder, inserter: inserter)
         // Simulates onPress starting a Task and onRelease firing immediately
         // after: startDictation() is in flight, unawaited, when
         // finishDictation() is called.
@@ -114,6 +116,40 @@ struct DictationEngineHappyPathTests {
         await startTask.value
         #expect(engine.state == .idle)
         #expect(!inserter.inserted.value.isEmpty)
+        // "start" must precede "stop" — recorder.stop() must never run before
+        // recorder.start() has finished — and there must be no orphaned late
+        // "start" left running after the dictation has already completed.
+        #expect(recorder.callLog.value == ["start", "stop"])
+        #expect(recorder.startCount.value == 1)
+    }
+
+    @Test("cancelling during a slow start waits for it, then cancels exactly once")
+    func cancelDuringSlowStartWaitsThenCancels() async {
+        let recorder = FakeRecorder(startDelayNanoseconds: 20_000_000) // 20ms
+        let engine = makeEngine(recorder: recorder)
+        let startTask = Task { await engine.startDictation() }
+        await Task.yield()
+        await engine.cancelDictation()
+        await startTask.value
+        #expect(engine.state == .idle)
+        #expect(recorder.callLog.value == ["start", "cancel"])
+        #expect(recorder.startCount.value == 1)
+    }
+
+    @Test("cancelling a start that fails still leaves the engine idle, not failed")
+    func cancelAfterFailedStartEndsIdle() async {
+        // Design decision: a user-initiated cancel takes precedence over a
+        // start that failed while the cancel was waiting for it. The user
+        // already ended this dictation; surfacing a failure banner for a
+        // session they themselves cancelled would misattribute the outcome.
+        let recorder = FakeRecorder(startError: .recordingFailed("mic indisponível"),
+                                     startDelayNanoseconds: 20_000_000)
+        let engine = makeEngine(recorder: recorder)
+        let startTask = Task { await engine.startDictation() }
+        await Task.yield()
+        await engine.cancelDictation()
+        await startTask.value
+        #expect(engine.state == .idle)
     }
 
     @Test("cancels an in-progress recording")

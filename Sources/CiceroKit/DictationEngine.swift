@@ -20,6 +20,13 @@ public final class DictationEngine {
 
     private var context: DictationContext = .unknown
 
+    /// The in-flight `startDictation()` work, so `finishDictation()` and
+    /// `cancelDictation()` can wait for the recorder to actually finish
+    /// starting before touching it — the synchronous `state` claim below
+    /// prevents stranding, but only this task ordering prevents `stop()`
+    /// or `cancel()` from racing ahead of `recorder.start()`.
+    private var startTask: Task<Void, Never>?
+
     public init(recorder: any AudioRecorder,
                 transcriber: any Transcriber,
                 polisher: any TextPolisher,
@@ -38,16 +45,30 @@ public final class DictationEngine {
         // these awaits lets a fast tap's finishDictation() observe `.idle`, return
         // early, and strand the engine in a recording that never stops.
         state = .recording
-        context = await contextProvider.currentContext()
-        do {
-            try await recorder.start()
-        } catch {
-            fail(with: error)
+        // The state claim above is not enough on its own: it stops a fast tap
+        // from being ignored, but finishDictation()/cancelDictation() could
+        // still race ahead of recorder.start() itself, since that call is
+        // async. Running the start work as a task that they explicitly await
+        // serializes "start" before "stop"/"cancel" without reintroducing the
+        // stranding bug.
+        let task = Task { @MainActor [self] in
+            context = await contextProvider.currentContext()
+            do {
+                try await recorder.start()
+            } catch {
+                fail(with: error)
+            }
         }
+        startTask = task
+        await task.value
     }
 
     /// Happy path only. Task 3 adds the guards and fallbacks.
     public func finishDictation() async {
+        guard state == .recording else { return }
+        // Never stop a recorder that has not finished starting.
+        await startTask?.value
+        // The start may have failed while we waited.
         guard state == .recording else { return }
         state = .transcribing
         do {
@@ -66,6 +87,13 @@ public final class DictationEngine {
 
     public func cancelDictation() async {
         guard state == .recording else { return }
+        state = .idle
+        // Never cancel a recorder that has not finished starting.
+        await startTask?.value
+        // A user-initiated cancel takes precedence over a start that failed
+        // while we were waiting for it: re-assert `.idle` so cancelling never
+        // surfaces a failure banner for a dictation the user is the one who
+        // ended. (See the fix report for the full reasoning.)
         state = .idle
         await recorder.cancel()
     }

@@ -20,23 +20,43 @@ final class Box<Value>: @unchecked Sendable {
 struct FakeRecorder: AudioRecorder {
     let buffer: AudioBuffer
     let startError: CiceroError?
+    /// Artificial delay inside `start()`, so tests can reach interleavings
+    /// (e.g. cancel arriving while a start is still in flight) that would
+    /// otherwise be too fast to hit reliably.
+    let startDelayNanoseconds: UInt64
     let started = Box(false)
     let startCount = Box(0)
     let cancelled = Box(false)
+    /// Ordered record of "start"/"stop"/"cancel" calls, so tests can assert
+    /// on call ORDER, not just counts — a count alone can't tell a correct
+    /// start-then-stop apart from an orphaned stop-before-start.
+    let callLog = Box<[String]>([])
 
     init(buffer: AudioBuffer = AudioBuffer(samples: Array(repeating: 0.3, count: 16_000), sampleRate: 16_000),
-         startError: CiceroError? = nil) {
+         startError: CiceroError? = nil,
+         startDelayNanoseconds: UInt64 = 0) {
         self.buffer = buffer
         self.startError = startError
+        self.startDelayNanoseconds = startDelayNanoseconds
     }
 
     func start() async throws {
         startCount.mutate { $0 += 1 }
+        if startDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: startDelayNanoseconds)
+        }
+        callLog.mutate { $0.append("start") }
         if let startError { throw startError }
         started.value = true
     }
-    func stop() async throws -> AudioBuffer { buffer }
-    func cancel() async { cancelled.value = true }
+    func stop() async throws -> AudioBuffer {
+        callLog.mutate { $0.append("stop") }
+        return buffer
+    }
+    func cancel() async {
+        callLog.mutate { $0.append("cancel") }
+        cancelled.value = true
+    }
 }
 
 struct FakeTranscriber: Transcriber {
