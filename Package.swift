@@ -26,6 +26,9 @@ let testRunnerLinkerSettings: [LinkerSetting] = [
 let package = Package(
     name: "Cicero",
     platforms: [.macOS("26.0")],
+    dependencies: [
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
+    ],
     targets: [
         .target(name: "CiceroKit"),
         .executableTarget(
@@ -40,6 +43,17 @@ let package = Package(
             name: "CiceroAudioTests",
             dependencies: ["CiceroAudio", "CiceroKit"],
             path: "Tests/CiceroAudioTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
+        .target(name: "CiceroWhisper", dependencies: [
+            "CiceroKit",
+            .product(name: "WhisperKit", package: "WhisperKit"),
+        ]),
+        .executableTarget(
+            name: "CiceroWhisperTests",
+            dependencies: ["CiceroWhisper", "CiceroKit"],
+            path: "Tests/CiceroWhisperTests",
             swiftSettings: testRunnerSwiftSettings,
             linkerSettings: testRunnerLinkerSettings
         ),
