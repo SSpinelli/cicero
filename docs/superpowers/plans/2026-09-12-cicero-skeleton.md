@@ -2760,38 +2760,22 @@ final class HUDWindow {
 
 - [ ] **Step 2: Show the HUD from the app delegate**
 
-In `Sources/CiceroApp/AppDelegate.swift`, add the property beside the others:
+⚠️ **Do not rewrite the hotkey closures.** Task 9 went through two review rounds on this file. The closures now chain each action onto the previous one (`await previous?.value`) because Swift does not guarantee ordering between unstructured tasks, and without that chaining a fast tap can run `finishDictation()` before `startDictation()` and strand the engine recording forever. Replacing them with the simpler shape would silently reintroduce that bug.
+
+Also note `refreshStatusItem()` **no longer exists**: Task 9 made `AppDelegate` an `NSMenuDelegate` and rebuilds the menu in `menuNeedsUpdate(_:)`, so the menu now refreshes itself whenever the user opens it. The HUD is the only thing you need to drive.
+
+Add the property beside the others:
 
 ```swift
     private let hud = HUDWindow()
 ```
 
-Then replace the two hotkey closures inside `buildEngine()` with versions that drive the HUD:
+Add this method to the class — it touches only the HUD:
 
 ```swift
-        hotkeyMonitor = HotkeyMonitor(
-            hotkey: .defaultHotkey,
-            onPress: { [weak self] in
-                guard let self, self.modelIsReady else { return }
-                Task {
-                    await self.engine?.startDictation()
-                    self.syncUI()
-                }
-            },
-            onRelease: { [weak self] in
-                guard let self else { return }
-                Task {
-                    await self.engine?.finishDictation()
-                    self.syncUI()
-                }
-            })
-```
-
-And add this method to the class:
-
-```swift
-    private func syncUI() {
-        refreshStatusItem()
+    /// The menu refreshes itself via `menuNeedsUpdate(_:)`, so only the HUD
+    /// needs pushing.
+    private func syncHUD() {
         guard let state = engine?.state else { return }
         switch state {
         case .idle:
@@ -2802,26 +2786,44 @@ And add this method to the class:
     }
 ```
 
+Then add HUD calls **inside the existing chained tasks**, leaving the chaining itself untouched:
+
+```swift
+            onPress: { [weak self] in
+                guard let self, case .ready = self.modelLoadState else { return }
+                let previous = self.actionTask
+                self.actionTask = Task { @MainActor in
+                    await previous?.value
+                    await self.engine?.startDictation()
+                    self.syncHUD()
+                }
+            },
+```
+
 - [ ] **Step 3: Drive the HUD through the whole dictation, not just its ends**
 
-`finishDictation()` moves through transcribing, polishing and inserting before returning, so the two calls above only show the first and last state. Replace the `onRelease` closure with one that polls while the engine works:
+`finishDictation()` moves through transcribing, polishing and inserting before returning, so a single call after it shows only the last state. Real WhisperKit timings put that window at tens of seconds, so the HUD must track it. Poll while the engine works, again keeping the chaining:
 
 ```swift
             onRelease: { [weak self] in
                 guard let self else { return }
-                Task {
-                    let ticker = Task { [weak self] in
+                let previous = self.actionTask
+                self.actionTask = Task { @MainActor in
+                    await previous?.value
+                    let ticker = Task { @MainActor [weak self] in
                         while !Task.isCancelled {
-                            self?.syncUI()
+                            self?.syncHUD()
                             try? await Task.sleep(for: .milliseconds(120))
                         }
                     }
                     await self.engine?.finishDictation()
                     ticker.cancel()
-                    self.syncUI()
+                    self.syncHUD()
                 }
             })
 ```
+
+The ticker must be cancelled on every exit from that task, including a thrown error, or it polls forever and the HUD never hides.
 
 - [ ] **Step 4: Rebuild and verify**
 
