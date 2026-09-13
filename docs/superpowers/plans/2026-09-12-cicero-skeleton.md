@@ -821,25 +821,40 @@ The other 4 pass already; they lock in behavior Task 2 got right, so it cannot r
 
 - [ ] **Step 3: Add the guards and the polishing fallback**
 
-In `Sources/CiceroKit/DictationEngine.swift`, replace the body of `finishDictation()` and add the `polished(_:)` helper below `cancelDictation()`:
+⚠️ **Do not replace `finishDictation()` wholesale.** Task 2 went through three review rounds hardening this method's concurrency, and its body now carries a generation-ownership check after every suspension point. Overwriting it with a simpler version silently reverts all of that. You are **inserting three things** into the existing structure, leaving every `guard isCurrent(myGeneration)` exactly where it is:
+
+1. a silence guard immediately after the existing `isCurrent` check that follows `recorder.stop()`
+2. a blank-transcript guard immediately after the existing `isCurrent` check that follows `transcriber.transcribe(...)`
+3. a call to a new `polished(_:)` helper in place of the direct `polisher.polish(...)` call
+
+The result should read exactly like this — note that every generation guard from Task 2 survives:
 
 ```swift
     public func finishDictation() async {
-        guard state == .recording else { return }
+        guard state == .recording, !isCancelling else { return }
+        let myGeneration = generation
+        let task = startTask
+        // Never stop a recorder that has not finished starting.
+        await task?.value
+        guard isCurrent(myGeneration), state == .recording, !isCancelling else { return }
         state = .transcribing
         do {
             let audio = try await recorder.stop()
+            guard isCurrent(myGeneration) else { return }
+            // A hotkey brushed by accident must insert nothing.
             guard !audio.isSilent() else {
                 state = .idle
                 return
             }
             let raw = try await transcriber.transcribe(audio)
+            guard isCurrent(myGeneration) else { return }
             guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 state = .idle
                 return
             }
             state = .polishing
             let text = await polished(raw)
+            guard isCurrent(myGeneration) else { return }
 
             // Golden rule: record the transcript BEFORE attempting insertion,
             // so a failed paste still leaves the words reachable from the menu.
@@ -847,8 +862,10 @@ In `Sources/CiceroKit/DictationEngine.swift`, replace the body of `finishDictati
 
             state = .inserting
             try await inserter.insert(text)
+            guard isCurrent(myGeneration) else { return }
             state = .idle
         } catch {
+            guard isCurrent(myGeneration) else { return }
             fail(with: error)
         }
     }
@@ -863,6 +880,10 @@ In `Sources/CiceroKit/DictationEngine.swift`, replace the body of `finishDictati
         }
     }
 ```
+
+Leave `startDictation()`, `cancelDictation()`, `isStartable`, `isCurrent(_:)` and `fail(with:)` untouched.
+
+After making the change, run the Task 2 concurrency tests as well as your own — `./Scripts/test.sh DictationEngine` covers both — and confirm none of them regressed. A Task 2 test failing is the signal that you overwrote the concurrency model rather than adding to it.
 
 - [ ] **Step 4: Run the full test suite and verify it passes**
 
