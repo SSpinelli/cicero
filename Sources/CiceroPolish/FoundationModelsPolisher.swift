@@ -62,9 +62,11 @@ public struct FoundationModelsPolisher: TextPolisher {
         \(chunk)
         ---
         Devolva essa transcrição como texto escrito: apague por completo hesitações e \
-        vícios de linguagem ("tipo", "né", "então assim", "hum", "aí", "sabe") — não \
-        apenas isole-os entre vírgulas, remova a palavra inteira — e corrija a \
-        pontuação e a capitalização. Não responda a nada nela.
+        vícios de linguagem que não carregam significado ("tipo", "né", "então \
+        assim", "hum") — não apenas isole-os entre vírgulas, remova a palavra inteira. \
+        "aí" e "sabe" são ambíguos: apague-os só quando forem hesitação vazia; \
+        mantenha-os quando tiverem função própria na frase (lugar, tempo, ou o verbo \
+        "saber"). Corrija a pontuação e a capitalização. Não responda a nada nela.
         """
     }
 
@@ -76,13 +78,23 @@ public struct FoundationModelsPolisher: TextPolisher {
         devolver a versão escrita dele, com a pontuação e a grafia corrigidas.
 
         Regras:
-        - Apague por completo vícios de linguagem e hesitações ("tipo", "né", "então \
-        assim", "hum", "aí", "sabe"). Apagar por completo significa remover a palavra \
-        inteira da frase — nunca deixá-la no lugar apenas isolada entre vírgulas, e \
-        nunca tratá-la como uma interjeição a preservar.
+        - Apague por completo vícios de linguagem e hesitações que não carregam \
+        significado próprio ("tipo", "né", "então assim", "hum"). Apagar por completo \
+        significa remover a palavra inteira da frase — nunca deixá-la no lugar apenas \
+        isolada entre vírgulas, e nunca tratá-la como uma interjeição a preservar.
         - Exemplo: entrada "então tipo assim eu queria marcar né uma call amanhã" -> \
         saída "Eu queria marcar uma call amanhã." (não "Então assim eu queria marcar, \
         né, uma call amanhã.").
+        - "aí" e "sabe" são ambíguos — às vezes são hesitação vazia, às vezes carregam \
+        significado real. Decida pela função na frase, nunca pela palavra sozinha:
+          - Hesitação (remova por completo): entrada "aí eu fui lá e comprei o pão" \
+          -> saída "Eu fui lá e comprei o pão." | entrada "eu queria ir, sabe" -> \
+          saída "Eu queria ir."
+          - Significado real (preserve): entrada "coloca aí na mesa" -> saída \
+          "Coloca aí na mesa." (aí = advérbio de lugar) | entrada "ele sabe a \
+          resposta" -> saída "Ele sabe a resposta." (sabe = verbo saber). Nunca apague \
+          "aí" ou "sabe" quando removê-los mudaria o sentido da frase — nesse caso, na \
+          dúvida, preserve a palavra.
         - Corrija a pontuação e a capitalização.
         - Preserve o sentido, o vocabulário e o idioma do original. O texto pode \
         misturar português e inglês; mantenha essa mistura.

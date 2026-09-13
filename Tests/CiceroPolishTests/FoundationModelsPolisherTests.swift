@@ -7,6 +7,16 @@ extension Tag {
     @Tag static var requiresAppleIntelligence: Tag
 }
 
+/// Lowercased, punctuation-stripped words, so filler checks can't be fooled
+/// by a word hiding inside another word or by stray punctuation, and can't
+/// false-fail on casing.
+private func words(in text: String) -> Set<String> {
+    Set(
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty })
+}
+
 @Suite("Polishers")
 struct PolisherTests {
 
@@ -38,12 +48,42 @@ struct PolisherTests {
         // that only checks length/keyword/punctuation can stay green while
         // "tipo" and "né" survive untouched. Check words, not substrings, so
         // this can't be fooled by a filler hiding inside a legitimate word.
-        let words = Set(
-            polished.lowercased()
-                .components(separatedBy: CharacterSet.alphanumerics.inverted)
-                .filter { !$0.isEmpty })
-        #expect(!words.contains("tipo"), "filler \"tipo\" survived polishing: \"\(polished)\"")
-        #expect(!words.contains("né"), "filler \"né\" survived polishing: \"\(polished)\"")
+        let polishedWords = words(in: polished)
+        #expect(!polishedWords.contains("tipo"), "filler \"tipo\" survived polishing: \"\(polished)\"")
+        #expect(!polishedWords.contains("né"), "filler \"né\" survived polishing: \"\(polished)\"")
+    }
+
+    // "aí" and "sabe" are common Brazilian Portuguese hesitation markers, but
+    // both are also ordinary words with real meaning ("sabe" the verb "to
+    // know", "aí" the locative adverb "there"). The golden rule — never lose
+    // what the user said — outranks polish quality, so these two must survive
+    // when they are doing real grammatical work, not just when they are inert
+    // filler syllables.
+
+    @Test(
+        "preserves \"sabe\" when it is the verb, not a hesitation tag",
+        .tags(.requiresAppleIntelligence), .timeLimit(.minutes(2)))
+    func preservesSabeAsVerb() async throws {
+        try #require(FoundationModelsPolisher.isAvailable)
+        let raw = "tipo ele sabe a resposta do exercício"
+        let polished = try await FoundationModelsPolisher().polish(raw, context: .unknown)
+
+        let polishedWords = words(in: polished)
+        #expect(polishedWords.contains("sabe"), "verb \"sabe\" was lost during polishing: \"\(polished)\"")
+        #expect(!polishedWords.contains("tipo"), "filler \"tipo\" survived polishing: \"\(polished)\"")
+    }
+
+    @Test(
+        "preserves \"aí\" when it is a locative adverb, not a hesitation tag",
+        .tags(.requiresAppleIntelligence), .timeLimit(.minutes(2)))
+    func preservesAiAsLocative() async throws {
+        try #require(FoundationModelsPolisher.isAvailable)
+        let raw = "tipo coloca aí na mesa"
+        let polished = try await FoundationModelsPolisher().polish(raw, context: .unknown)
+
+        let polishedWords = words(in: polished)
+        #expect(polishedWords.contains("aí"), "locative \"aí\" was lost during polishing: \"\(polished)\"")
+        #expect(!polishedWords.contains("tipo"), "filler \"tipo\" survived polishing: \"\(polished)\"")
     }
 
     @Test("preserves meaning rather than answering the text", .tags(.requiresAppleIntelligence), .timeLimit(.minutes(2)))
