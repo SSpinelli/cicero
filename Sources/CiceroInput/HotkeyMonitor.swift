@@ -13,17 +13,23 @@ public final class HotkeyMonitor {
     private let hotkey: Hotkey
     private let onPress: @MainActor () -> Void
     private let onRelease: @MainActor () -> Void
+    private let onCancel: @MainActor () -> Void
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var pressState = HotkeyPressState()
 
+    /// `onCancel` fires when Escape is pressed while the hotkey is held —
+    /// the spec's `recording --Esc--> idle` transition. It replaces the
+    /// release for that dictation: no `onRelease` follows it.
     public init(hotkey: Hotkey = .defaultHotkey,
                 onPress: @escaping @MainActor () -> Void,
-                onRelease: @escaping @MainActor () -> Void) {
+                onRelease: @escaping @MainActor () -> Void,
+                onCancel: @escaping @MainActor () -> Void) {
         self.hotkey = hotkey
         self.onPress = onPress
         self.onRelease = onRelease
+        self.onCancel = onCancel
     }
 
     public func start() throws {
@@ -108,6 +114,7 @@ public final class HotkeyMonitor {
         switch outcome.action {
         case .press: onPress()
         case .release: onRelease()
+        case .cancel: onCancel()
         case .none: break
         }
 

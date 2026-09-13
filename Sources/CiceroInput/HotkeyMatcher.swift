@@ -57,7 +57,13 @@ struct HotkeyPressState: Equatable, Sendable {
         case none
         case press
         case release
+        case cancel
     }
+
+    /// kVK_Escape. Escape pressed while the hotkey is held is the spec's
+    /// `recording --Esc--> idle` transition: throw this dictation away
+    /// instead of transcribing it.
+    static let cancelKeyCode: CGKeyCode = 53
 
     private(set) var isHeld = false
 
@@ -94,6 +100,17 @@ struct HotkeyPressState: Equatable, Sendable {
         guard isHeld, !stillSatisfied else { return .none }
         isHeld = false
         return .release
+    }
+
+    /// The cancel key went down while the hotkey was held.
+    ///
+    /// Clears `isHeld` deliberately: the dictation is over, so the hotkey
+    /// key-up that follows must not also fire a release and ask the engine
+    /// to finish what was just thrown away.
+    mutating func cancelKeyDown() -> Action {
+        guard isHeld else { return .none }
+        isHeld = false
+        return .cancel
     }
 
     /// The tap was disabled and has just been re-enabled. Any key-up that
@@ -144,6 +161,12 @@ extension HotkeyPressState {
                          hotkey: Hotkey) -> Outcome {
         switch kind {
         case .keyDown:
+            // Escape only means "cancel" while a dictation is actually being
+            // held; at every other moment it belongs to the focused app and
+            // is neither acted on nor swallowed.
+            if keyCode == Self.cancelKeyCode, isHeld {
+                return Outcome(action: cancelKeyDown(), swallowsEvent: true)
+            }
             guard hotkey.matches(keyCode: keyCode, flags: flags) else {
                 return Outcome(action: .none, swallowsEvent: false)
             }

@@ -10,6 +10,7 @@ final class HUDWindow {
     private let window: NSPanel
     private let label = NSTextField(labelWithString: "")
     private let dot = NSView()
+    private let container: NSView
 
     /// Auto-dismiss timer for the `.failed` state only.
     ///
@@ -24,6 +25,30 @@ final class HUDWindow {
     /// stale timer from a past failure can never hide a HUD that a new
     /// dictation just raised.
     private var autoHideTask: Task<Void, Never>?
+
+    /// Pill geometry. The panel is no longer a fixed 220×44: a `.failed`
+    /// state carries the message that tells the user where their words went
+    /// ("Campo de senha em foco. O texto ficou disponível no menu."), which
+    /// does not fit on one 168 pt line. The pill is measured against the
+    /// caption and grows — up to `maxWidth` and `maxLines` — so the message
+    /// is readable, and stays at its old size for the ordinary one-word
+    /// captions, which are the ones on screen almost all the time.
+    private enum Metrics {
+        static let dotDiameter: CGFloat = 12
+        static let leadingInset: CGFloat = 18
+        static let gap: CGFloat = 10
+        static let trailingInset: CGFloat = 18
+        static let verticalPadding: CGFloat = 12
+        static let minWidth: CGFloat = 220
+        static let maxWidth: CGFloat = 380
+        static let minHeight: CGFloat = 44
+        static let cornerRadius: CGFloat = 22
+        static let maxLines = 3
+
+        static var labelX: CGFloat { leadingInset + dotDiameter + gap }
+        static var minLabelWidth: CGFloat { minWidth - labelX - trailingInset }
+        static var maxLabelWidth: CGFloat { maxWidth - labelX - trailingInset }
+    }
 
     init() {
         // NSPanel, not NSWindow: `.nonactivatingPanel` is a panel-only style
@@ -45,23 +70,29 @@ final class HUDWindow {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.hasShadow = true
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 44))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: Metrics.minWidth, height: Metrics.minHeight))
         container.wantsLayer = true
         container.layer?.backgroundColor = Palette.marble.cgColor
-        container.layer?.cornerRadius = 22
+        container.layer?.cornerRadius = Metrics.cornerRadius
         container.layer?.borderWidth = 1
         container.layer?.borderColor = Palette.bronze.withAlphaComponent(0.4).cgColor
 
         dot.wantsLayer = true
-        dot.layer?.cornerRadius = 6
-        dot.frame = NSRect(x: 18, y: 16, width: 12, height: 12)
+        dot.layer?.cornerRadius = Metrics.dotDiameter / 2
         container.addSubview(dot)
 
-        label.frame = NSRect(x: 40, y: 12, width: 168, height: 20)
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = Palette.basalt
+        // A long failure message has to wrap rather than be cut off — it is
+        // the one string that points the user at their recovered text.
+        label.usesSingleLineMode = false
+        label.maximumNumberOfLines = Metrics.maxLines
+        label.lineBreakMode = .byTruncatingTail
+        label.cell?.wraps = true
+        label.cell?.isScrollable = false
         container.addSubview(label)
 
+        self.container = container
         window.contentView = container
     }
 
@@ -74,24 +105,82 @@ final class HUDWindow {
         autoHideTask?.cancel()
         autoHideTask = nil
 
-        label.stringValue = caption(for: state)
-        dot.layer?.backgroundColor = color(for: state).cgColor
-        position()
-        window.orderFrontRegardless()
+        present(caption: caption(for: state), color: color(for: state))
 
         if case .failed = state {
-            autoHideTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(4))
-                guard !Task.isCancelled else { return }
-                self?.hide()
-            }
+            scheduleAutoHide()
         }
+    }
+
+    /// Shows a message that is not an engine state — today, the one the spec
+    /// requires when the hotkey is pressed before the Whisper model is ready
+    /// ("HUD informa; ditada não inicia"). Without it that press produces no
+    /// feedback at all: the keystroke is swallowed by the tap and the only
+    /// explanation lives in a menu the user has no reason to open.
+    ///
+    /// Auto-hides like a failure, because nothing will follow it: no
+    /// dictation was started, so no later state change would clear it.
+    func notice(_ message: String) {
+        autoHideTask?.cancel()
+        autoHideTask = nil
+        present(caption: message, color: Palette.bronze)
+        scheduleAutoHide()
     }
 
     func hide() {
         autoHideTask?.cancel()
         autoHideTask = nil
         window.orderOut(nil)
+    }
+
+    private func present(caption: String, color: NSColor) {
+        layOut(caption: caption)
+        dot.layer?.backgroundColor = color.cgColor
+        position()
+        window.orderFrontRegardless()
+    }
+
+    private func scheduleAutoHide() {
+        autoHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.hide()
+        }
+    }
+
+    /// Sizes the pill around the caption. One-word captions keep the original
+    /// 220×44 pill; a message that needs more room gets a wider, taller one
+    /// rather than being silently cut in half.
+    private func layOut(caption: String) {
+        label.stringValue = caption
+
+        let widest = measureLabel(fitting: Metrics.maxLabelWidth)
+        let labelWidth = min(max(widest.width.rounded(.up), Metrics.minLabelWidth), Metrics.maxLabelWidth)
+        let labelHeight = measureLabel(fitting: labelWidth).height.rounded(.up)
+
+        let pillWidth = labelWidth + Metrics.labelX + Metrics.trailingInset
+        let pillHeight = max(Metrics.minHeight, labelHeight + Metrics.verticalPadding * 2)
+
+        window.setContentSize(NSSize(width: pillWidth, height: pillHeight))
+        container.frame = NSRect(x: 0, y: 0, width: pillWidth, height: pillHeight)
+        container.layer?.cornerRadius = min(Metrics.cornerRadius, pillHeight / 2)
+
+        dot.frame = NSRect(x: Metrics.leadingInset,
+                           y: (pillHeight - Metrics.dotDiameter) / 2,
+                           width: Metrics.dotDiameter,
+                           height: Metrics.dotDiameter)
+        label.frame = NSRect(x: Metrics.labelX,
+                             y: (pillHeight - labelHeight) / 2,
+                             width: labelWidth,
+                             height: labelHeight)
+    }
+
+    private func measureLabel(fitting width: CGFloat) -> NSSize {
+        guard let cell = label.cell else { return label.intrinsicContentSize }
+        // A finite, absurdly tall bound rather than `.greatestFiniteMagnitude`:
+        // the cell multiplies it out internally, and infinities there produce
+        // NaN geometry.
+        return cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 10_000))
     }
 
     private func position() {
@@ -110,7 +199,12 @@ final class HUDWindow {
         case .transcribing: return "Transcrevendo…"
         case .polishing:    return "Polindo…"
         case .inserting:    return "Inserindo…"
-        case .failed:       return "Algo deu errado"
+        // The payload, not a generic apology. For secure input it reads
+        // "Campo de senha em foco. O texto ficou disponível no menu." — the
+        // one string that tells the user where their words went, which the
+        // spec requires here (§6) and which the discarded version left
+        // reachable only from a menu they had no reason to open.
+        case .failed(let message): return message
         }
     }
 

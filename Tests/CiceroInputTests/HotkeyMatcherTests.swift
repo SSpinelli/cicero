@@ -289,6 +289,52 @@ struct HotkeyPressStateRoutingTests {
         #expect(!outcome.swallowsEvent, "engolir um evento de modificador corrompe o estado de teclas dos outros apps")
     }
 
+    // MARK: - Esc cancels (spec §4.3: recording --Esc--> idle)
+
+    @Test("Esc while the hotkey is held cancels the dictation and is swallowed")
+    func escapeWhileHeldCancels() {
+        var state = HotkeyPressState()
+        _ = state.handle(.keyDown, keyCode: space, flags: chord, hotkey: hotkey)
+
+        #expect(state.handle(.keyDown, keyCode: 53, flags: chord, hotkey: hotkey)
+                == .init(action: .cancel, swallowsEvent: true))
+        #expect(!state.isHeld)
+    }
+
+    @Test("the key-up after an Esc cancel does not also finish the dictation")
+    func keyUpAfterCancelDoesNothing() {
+        var state = HotkeyPressState()
+        _ = state.handle(.keyDown, keyCode: space, flags: chord, hotkey: hotkey)
+        _ = state.handle(.keyDown, keyCode: 53, flags: chord, hotkey: hotkey)
+
+        // Releasing the chord after cancelling must not ask the engine to
+        // transcribe the audio the user just threw away.
+        #expect(state.handle(.keyUp, keyCode: space, flags: chord, hotkey: hotkey)
+                == .init(action: .none, swallowsEvent: false))
+        #expect(state.handle(.flagsChanged, keyCode: 59, flags: [], hotkey: hotkey)
+                == .init(action: .none, swallowsEvent: false))
+    }
+
+    @Test("Esc outside a dictation belongs to the focused app and is left alone")
+    func escapeWhileNotHeldPassesThrough() {
+        var state = HotkeyPressState()
+        #expect(state.handle(.keyDown, keyCode: 53, flags: [], hotkey: hotkey)
+                == .init(action: .none, swallowsEvent: false))
+        #expect(state.handle(.keyUp, keyCode: 53, flags: [], hotkey: hotkey)
+                == .init(action: .none, swallowsEvent: false))
+    }
+
+    @Test("the hotkey still works after an Esc cancel")
+    func hotkeyWorksAfterCancel() {
+        var state = HotkeyPressState()
+        _ = state.handle(.keyDown, keyCode: space, flags: chord, hotkey: hotkey)
+        _ = state.handle(.keyDown, keyCode: 53, flags: chord, hotkey: hotkey)
+        _ = state.handle(.keyUp, keyCode: space, flags: [], hotkey: hotkey)
+
+        #expect(state.handle(.keyDown, keyCode: space, flags: chord, hotkey: hotkey)
+                == .init(action: .press, swallowsEvent: true))
+    }
+
     @Test("an extra modifier pressed mid-dictation does not end it")
     func extraModifierDoesNotRelease() {
         var state = HotkeyPressState()

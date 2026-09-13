@@ -112,7 +112,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hotkeyMonitor = HotkeyMonitor(
             hotkey: .defaultHotkey,
             onPress: { [weak self] in
-                guard let self, case .ready = self.modelLoadState else { return }
+                guard let self else { return }
+                // Spec §6: "Modelo Whisper ainda não baixado → HUD informa;
+                // ditada não inicia." Dropping the press silently is not that:
+                // the tap has already swallowed the keystroke, so without this
+                // the user sees their Space vanish and gets no explanation
+                // anywhere except a menu they have no reason to open.
+                switch self.modelLoadState {
+                case .loading:
+                    self.hud.notice("Carregando modelo… aguarde para ditar")
+                    return
+                case .failed(let message):
+                    self.hud.notice(message)
+                    return
+                case .ready:
+                    break
+                }
                 let previous = self.actionTask
                 self.actionTask = Task { @MainActor in
                     await previous?.value
@@ -144,6 +159,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     }
                     await self.engine?.finishDictation()
                     ticker.cancel()
+                    self.syncHUD()
+                }
+            },
+            // Spec §4.3's `recording --Esc--> idle`. Chained onto the same
+            // `actionTask` as press and release for the same reason they are:
+            // a cancel that ran before the press it belongs to would find the
+            // engine `.idle`, no-op, and leave the dictation running.
+            onCancel: { [weak self] in
+                guard let self else { return }
+                let previous = self.actionTask
+                self.actionTask = Task { @MainActor in
+                    await previous?.value
+                    await self.engine?.cancelDictation()
                     self.syncHUD()
                 }
             })
