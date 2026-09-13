@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import CiceroKit
 @testable import CiceroPolish
 
@@ -32,6 +33,17 @@ struct PolisherTests {
         #expect(!polished.isEmpty)
         #expect(polished.lowercased().contains("reunião"))
         #expect(polished.contains(".") || polished.contains(","))
+
+        // The whole point of this polisher is removing verbal filler — a test
+        // that only checks length/keyword/punctuation can stay green while
+        // "tipo" and "né" survive untouched. Check words, not substrings, so
+        // this can't be fooled by a filler hiding inside a legitimate word.
+        let words = Set(
+            polished.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty })
+        #expect(!words.contains("tipo"), "filler \"tipo\" survived polishing: \"\(polished)\"")
+        #expect(!words.contains("né"), "filler \"né\" survived polishing: \"\(polished)\"")
     }
 
     @Test("preserves meaning rather than answering the text", .tags(.requiresAppleIntelligence), .timeLimit(.minutes(2)))

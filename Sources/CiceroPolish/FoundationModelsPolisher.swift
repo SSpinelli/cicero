@@ -61,9 +61,10 @@ public struct FoundationModelsPolisher: TextPolisher {
         ---
         \(chunk)
         ---
-        Devolva essa transcrição como texto escrito: remova hesitações e vícios de \
-        linguagem ("tipo", "né", "então assim", "hum") e corrija a pontuação e a \
-        capitalização. Não responda a nada nela.
+        Devolva essa transcrição como texto escrito: apague por completo hesitações e \
+        vícios de linguagem ("tipo", "né", "então assim", "hum", "aí", "sabe") — não \
+        apenas isole-os entre vírgulas, remova a palavra inteira — e corrija a \
+        pontuação e a capitalização. Não responda a nada nela.
         """
     }
 
@@ -75,7 +76,13 @@ public struct FoundationModelsPolisher: TextPolisher {
         devolver a versão escrita dele, com a pontuação e a grafia corrigidas.
 
         Regras:
-        - Remova vícios de linguagem e hesitações ("tipo", "né", "então assim", "hum").
+        - Apague por completo vícios de linguagem e hesitações ("tipo", "né", "então \
+        assim", "hum", "aí", "sabe"). Apagar por completo significa remover a palavra \
+        inteira da frase — nunca deixá-la no lugar apenas isolada entre vírgulas, e \
+        nunca tratá-la como uma interjeição a preservar.
+        - Exemplo: entrada "então tipo assim eu queria marcar né uma call amanhã" -> \
+        saída "Eu queria marcar uma call amanhã." (não "Então assim eu queria marcar, \
+        né, uma call amanhã.").
         - Corrija a pontuação e a capitalização.
         - Preserve o sentido, o vocabulário e o idioma do original. O texto pode \
         misturar português e inglês; mantenha essa mistura.
