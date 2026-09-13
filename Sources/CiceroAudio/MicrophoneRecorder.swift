@@ -145,6 +145,17 @@ public actor MicrophoneRecorder: AudioRecorder {
         let task = Task<StartOutcome, Never> { [weak self] in
             let result = await Self.startEngine(sessionEngine, appendSamples: appendSamples)
             guard let self else {
+                // The recorder was dropped while the engine was still coming
+                // up. If the start actually succeeded, a tap is installed on a
+                // running engine that nothing will ever stop: `deinit` cannot
+                // help, because `phase` never reached `.running`, and the
+                // engine is referenced only by this closure. Release it here,
+                // through the engine instance this attempt already captured —
+                // the same cleanup `startEngine` does when the timeout wins.
+                if case .success = result {
+                    sessionEngine.inputNode.removeTap(onBus: 0)
+                    sessionEngine.stop()
+                }
                 continuation.finish()
                 return .failure(.recordingFailed("gravador não existe mais"))
             }
