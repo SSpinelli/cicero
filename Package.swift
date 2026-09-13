@@ -73,5 +73,8 @@ let package = Package(
             swiftSettings: testRunnerSwiftSettings,
             linkerSettings: testRunnerLinkerSettings
         ),
+        .executableTarget(name: "CiceroApp", dependencies: [
+            "CiceroKit", "CiceroAudio", "CiceroWhisper", "CiceroPolish", "CiceroInput",
+        ]),
     ]
 )
