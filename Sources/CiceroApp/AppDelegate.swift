@@ -65,6 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// synchronous callback itself.
     private var actionTask: Task<Void, Never>?
 
+    private let hud = HUDWindow()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
         buildEngine()
@@ -115,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.actionTask = Task { @MainActor in
                     await previous?.value
                     await self.engine?.startDictation()
+                    self.syncHUD()
                 }
             },
             onRelease: { [weak self] in
@@ -122,7 +125,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let previous = self.actionTask
                 self.actionTask = Task { @MainActor in
                     await previous?.value
+                    let ticker = Task { @MainActor [weak self] in
+                        while !Task.isCancelled {
+                            self?.syncHUD()
+                            try? await Task.sleep(for: .milliseconds(120))
+                        }
+                    }
                     await self.engine?.finishDictation()
+                    ticker.cancel()
+                    self.syncHUD()
                 }
             })
     }
@@ -184,6 +195,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func retryModelLoad() {
         modelLoadState = .loading
         Task { await loadModel() }
+    }
+
+    // MARK: - HUD
+
+    /// The menu refreshes itself via `menuNeedsUpdate(_:)`, so only the HUD
+    /// needs pushing.
+    private func syncHUD() {
+        guard let state = engine?.state else { return }
+        switch state {
+        case .idle:
+            hud.hide()
+        default:
+            hud.show(state: state)
+        }
     }
 
     // MARK: - Menu bar
