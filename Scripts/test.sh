@@ -31,7 +31,10 @@ for runner in "${RUNNERS[@]}"; do
     # several runners, any filter necessarily misses most of them. Swift
     # Testing reports "0 tests" and exits non-zero in that case, so tell it
     # apart from a genuine failure rather than counting it as one.
-    if [ "$status" -ne 0 ] && [ -n "$FILTER" ] && printf '%s' "$output" | grep -q "with 0 tests"; then
+    # Anchored to Swift Testing's summary line, and fed by a here-string rather
+    # than a pipe: under `pipefail` a pipe into `grep -q` can return SIGPIPE on
+    # large build output and turn a skip back into a reported failure.
+    if [ "$status" -ne 0 ] && [ -n "$FILTER" ] && grep -q "Test run with 0 tests" <<<"$output"; then
         skipped=$((skipped + 1))
         echo "   (nenhum teste corresponde a \"$FILTER\" neste runner)"
         continue
