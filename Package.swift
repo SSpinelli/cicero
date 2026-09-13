@@ -65,5 +65,13 @@ let package = Package(
             swiftSettings: testRunnerSwiftSettings,
             linkerSettings: testRunnerLinkerSettings
         ),
+        .target(name: "CiceroInput", dependencies: ["CiceroKit"]),
+        .executableTarget(
+            name: "CiceroInputTests",
+            dependencies: ["CiceroInput", "CiceroKit"],
+            path: "Tests/CiceroInputTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
     ]
 )
