@@ -20,70 +20,178 @@ public actor MicrophoneRecorder: AudioRecorder {
     /// permanently wedge dictation for the rest of the app's lifetime.
     private static let engineTimeout: TimeInterval = 5
 
-    private let engine = AVAudioEngine()
     private var samples: [Float] = []
-    private var isRunning = false
+
+    /// Where the recorder is in its lifecycle, claimed *synchronously* by
+    /// `start()`/`stop()`/`cancel()` before their first `await`. This actor is
+    /// reentrant — any `await` is a point where another call can interleave —
+    /// so a plain `Bool` set only after the (up to `engineTimeout`-long)
+    /// engine setup would let a `stop()`/`cancel()` arriving during that
+    /// window see a stale "not running" state. `DictationEngine` hit this
+    /// exact defect class; here it's closed by making every phase transition
+    /// an explicit, immediately-visible enum case instead of a flag flipped
+    /// after the fact.
+    private enum Phase {
+        case idle
+        case starting(Task<StartOutcome, Never>)
+        case running(Session)
+        case stopping(Task<Void, Never>)
+    }
+
+    /// State for one in-progress recording. Bundles the engine created for
+    /// this attempt with the plumbing that carries its captured samples to
+    /// `samples` in order (see `start()`'s doc comment on ordering).
+    private struct Session {
+        let engine: AVAudioEngine
+        let continuation: AsyncStream<[Float]>.Continuation
+        let consumer: Task<Void, Never>
+    }
+
+    private enum StartOutcome: Sendable {
+        case success
+        case failure(CiceroError)
+    }
+
+    private var phase: Phase = .idle
 
     public init() {}
 
     /// Starts capturing from the default input device.
     ///
-    /// The actual `AVAudioEngine` setup runs on a background thread, raced
-    /// against `engineTimeout`, because `AVAudioEngine.inputNode` and
-    /// `.start()` are synchronous calls into the CoreAudio HAL that can block
-    /// indefinitely — Swift structured concurrency can request cancellation
-    /// of a task, but cannot forcibly interrupt a blocking call already in
-    /// flight, so racing on a separate thread is the only way to guarantee
-    /// this method returns. If the timeout wins, the setup work may still be
-    /// running in the background; if it later succeeds anyway, the tap and
-    /// engine are torn back down immediately since the caller has already
-    /// been told `start()` failed.
+    /// A fresh `AVAudioEngine` is created for every call, held only for the
+    /// duration of this attempt (never as a stored actor property). This
+    /// matters because the actual setup runs on a background thread, raced
+    /// against `engineTimeout`: `AVAudioEngine.inputNode` and `.start()` are
+    /// synchronous calls into the CoreAudio HAL that can block indefinitely —
+    /// Swift structured concurrency can request cancellation of a task, but
+    /// cannot forcibly interrupt a blocking call already in flight, so racing
+    /// on a separate thread is the only way to guarantee this method
+    /// returns. If the timeout wins, that background work may still be
+    /// running; if it later succeeds anyway, `startEngine` tears its tap and
+    /// engine back down immediately, since the caller has already been told
+    /// `start()` failed. Giving each attempt its own engine instance means
+    /// that abandoned background work can only ever touch an engine nothing
+    /// else references — never one a *later* `start()` call is using.
+    ///
+    /// Captured buffers are handed to `samples` through an `AsyncStream`
+    /// rather than one unstructured `Task` per tap callback: Swift does not
+    /// guarantee that unstructured tasks created in order A-then-B are
+    /// scheduled onto the actor in that order, and reordered audio would
+    /// silently produce a garbled transcript in Task 5. The tap callback
+    /// (invoked serially, one buffer at a time, by CoreAudio) `yield`s
+    /// synchronously into the stream; a single consumer task drains it in
+    /// strict FIFO order onto `samples`.
     public func start() async throws {
-        guard !isRunning else { return }
-        samples.removeAll(keepingCapacity: true)
-
-        let engine = self.engine
-        let appendSamples: @Sendable ([Float]) -> Void = { [weak self] newSamples in
-            Task { await self?.append(newSamples) }
+        switch phase {
+        case .starting, .running, .stopping:
+            return
+        case .idle:
+            break
         }
 
-        switch await Self.startEngine(engine, appendSamples: appendSamples) {
+        samples.removeAll(keepingCapacity: true)
+
+        let sessionEngine = AVAudioEngine()
+        let (stream, continuation) = AsyncStream<[Float]>.makeStream()
+        let appendSamples: @Sendable ([Float]) -> Void = { chunk in
+            continuation.yield(chunk)
+        }
+
+        let task = Task<StartOutcome, Never> { [weak self] in
+            let result = await Self.startEngine(sessionEngine, appendSamples: appendSamples)
+            guard let self else {
+                continuation.finish()
+                return .failure(.recordingFailed("gravador não existe mais"))
+            }
+            switch result {
+            case .success:
+                let consumer = Task {
+                    for await chunk in stream {
+                        await self.append(chunk)
+                    }
+                }
+                await self.setRunning(Session(engine: sessionEngine, continuation: continuation, consumer: consumer))
+                return .success
+            case .failure(let error):
+                continuation.finish()
+                await self.setIdle()
+                return .failure(error)
+            }
+        }
+        phase = .starting(task)
+
+        switch await task.value {
         case .success:
-            isRunning = true
+            return
         case .failure(let error):
             throw error
         }
     }
 
     public func stop() async throws -> CiceroKit.AudioBuffer {
-        guard isRunning else {
+        await awaitPendingStart()
+        guard case .running = phase else {
             throw CiceroError.recordingFailed("gravação não estava ativa")
         }
         await teardown()
         return CiceroKit.AudioBuffer(samples: samples, sampleRate: Self.targetSampleRate)
     }
 
-    /// Tears down the engine and discards any captured samples.
+    /// Tears down the current recording, if any, and discards captured
+    /// samples.
     ///
     /// Must tolerate being called after a `start()` that threw. The engine
     /// (`DictationEngine`) calls `cancel()` unconditionally during teardown,
     /// including on the failure path where `start()` never reached
-    /// `isRunning = true` — in that case this is a no-op. `start()` only sets
-    /// `isRunning = true` after the tap is installed and the audio engine has
-    /// started successfully, and every earlier failure path leaves no tap or
-    /// running engine behind, so there is never a partially-started state for
-    /// `cancel()` to clean up.
+    /// `.running` — in that case, once any in-flight start has settled,
+    /// `phase` is back to `.idle` and this is a no-op. A `start()` only
+    /// reaches `.running` after the tap is installed and the audio engine
+    /// has started successfully, and every earlier failure path leaves no
+    /// tap or running engine behind, so there is never a partially-started
+    /// engine for `cancel()` to clean up.
     public func cancel() async {
-        guard isRunning else { return }
+        await awaitPendingStart()
+        guard case .running = phase else { return }
         await teardown()
         samples.removeAll(keepingCapacity: false)
     }
 
+    /// If a `start()` is currently in flight, waits for it to settle into
+    /// `.running` or back to `.idle` before returning. Without this, a
+    /// `stop()`/`cancel()` arriving while `start()` is still awaiting the
+    /// (up to `engineTimeout`-long) engine setup would read the stale
+    /// pre-transition phase — e.g. `stop()` throwing "not active" for a
+    /// recording that was about to become active.
+    private func awaitPendingStart() async {
+        if case .starting(let task) = phase {
+            _ = await task.value
+        }
+    }
+
+    private func setRunning(_ session: Session) {
+        phase = .running(session)
+    }
+
+    private func setIdle() {
+        phase = .idle
+    }
+
     private func teardown() async {
-        // Flip the flag before the (possibly slow) engine teardown so a
-        // concurrent `start()`/`stop()` never observes a half-torn-down engine.
-        isRunning = false
-        await Self.stopEngine(engine)
+        guard case .running(let session) = phase else { return }
+        // Claim `.stopping` synchronously before the (possibly slow) engine
+        // teardown so this phase is visible to anything consulting it while
+        // we're mid-teardown, same reasoning as `.starting` above.
+        let stoppingTask = Task {
+            await Self.stopEngine(session.engine)
+            session.continuation.finish()
+            // Wait for the consumer to drain every buffer already yielded
+            // before this method returns, so `stop()` never reads `samples`
+            // with trailing audio still in flight.
+            await session.consumer.value
+        }
+        phase = .stopping(stoppingTask)
+        await stoppingTask.value
+        phase = .idle
     }
 
     private func append(_ newSamples: [Float]) {
