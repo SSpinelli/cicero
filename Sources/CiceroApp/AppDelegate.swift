@@ -40,6 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// finished loading. Without this flag, `statusLine` would read "Pronto —
     /// segure ⌃⌥Espaço" the moment the model is ready even though no event
     /// tap exists yet, and a press would do nothing with no indication why.
+    ///
+    /// Retried from two places while `false`: `applicationDidBecomeActive`
+    /// (fires when activation happens to occur, which is not guaranteed for
+    /// a Dock-less, window-less accessory app) and `menuNeedsUpdate` (fires
+    /// every time the user opens the menu, which — since the menu is the
+    /// only place this state is visible — is guaranteed to happen if the
+    /// user is checking on it at all). The second one is what actually makes
+    /// "grant Accessibility, come back" reliable.
     private var hotkeyArmed = false
 
     /// The most recently enqueued hotkey-triggered engine call, so the next
@@ -64,14 +72,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Task { await loadModel() }
     }
 
-    /// Accessory apps still receive this when the user interacts with the
-    /// status item (clicking it briefly activates the process). It's the
-    /// natural point to retry arming the hotkey: the common sequence is
-    /// press hotkey → nothing happens → open the menu (which activates us)
-    /// → grant Accessibility in the Settings pane the alert opened → click
-    /// back into Cicero. `HotkeyMonitor.start()` is idempotent once armed
-    /// (`guard tap == nil else { return }`), so retrying costs nothing when
-    /// it's already running.
+    /// A best-effort retry point, not the guaranteed one: activation of an
+    /// accessory app with no Dock icon and no windows is not reliably
+    /// triggered by opening its status item's menu, so this can simply never
+    /// fire on some systems. `menuNeedsUpdate` below is the retry that
+    /// actually has to work; this one is free insurance for the cases where
+    /// activation does happen. `HotkeyMonitor.start()` is idempotent once
+    /// armed (`guard tap == nil else { return }`), so retrying costs nothing
+    /// when it's already running.
     func applicationDidBecomeActive(_ notification: Notification) {
         guard !hotkeyArmed else { return }
         startHotkeyMonitor(showAlertOnFailure: false)
@@ -135,13 +143,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Attempts to arm the global hotkey tap. Called once at launch (with an
     /// alert on failure — this is the one alert the whole first run depends
-    /// on) and again from `applicationDidBecomeActive` every time the app is
-    /// reactivated while still unarmed (silently — repeating the alert on
-    /// every click into the status item would be obnoxious, and the status
-    /// line already keeps saying the hotkey is inactive).
+    /// on) and again, silently, from `applicationDidBecomeActive` and
+    /// `menuNeedsUpdate` every time either fires while still unarmed
+    /// (repeating the alert on every reactivation or menu open would be
+    /// obnoxious, and the status line already keeps saying the hotkey is
+    /// inactive).
+    ///
+    /// Requires an actual `HotkeyMonitor` to declare success: `try
+    /// hotkeyMonitor?.start()` alone would not throw when `hotkeyMonitor` is
+    /// `nil` (only reachable if this ran before `buildEngine()`, which the
+    /// normal launch sequence never does — but `hotkeyArmed`'s only job is
+    /// to not lie about the tap, so it must not have a path that does).
     private func startHotkeyMonitor(showAlertOnFailure: Bool) {
+        guard let hotkeyMonitor else { return }
         do {
-            try hotkeyMonitor?.start()
+            try hotkeyMonitor.start()
             hotkeyArmed = true
         } catch {
             hotkeyArmed = false
@@ -187,7 +203,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// from whenever the last engine call happened to finish. This also
     /// means the menu is never reassigned out from under itself while the
     /// user might have it open — only its items change.
+    ///
+    /// Also the guaranteed retry point for arming the hotkey: a menu bar
+    /// extra's own menu opening does not reliably activate the owning app
+    /// (`applicationDidBecomeActive` is a best-effort backstop, not a
+    /// guarantee — see `hotkeyArmed`'s doc comment), but the user opening
+    /// this menu to check the status is guaranteed, since it's the only
+    /// place that status is visible. Retrying here — silently, since a
+    /// dropdown appearing is not the moment for a modal alert — is what
+    /// actually makes "grant Accessibility, come back" work every time.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if !hotkeyArmed {
+            startHotkeyMonitor(showAlertOnFailure: false)
+        }
+
         menu.removeAllItems()
 
         let status = NSMenuItem(title: statusLine, action: nil, keyEquivalent: "")
