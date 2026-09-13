@@ -85,7 +85,7 @@ struct ClipboardTextInserterTests {
 
         let inserter = ClipboardTextInserter(
             restoreDelay: .milliseconds(10),
-            pasteboard: pasteboard,
+            pasteboard: PasteboardHandle(pasteboard: pasteboard),
             pasteStep: FakePasteStep(pasteboard: pasteboard),
             secureInputCheck: { true }
         )
@@ -112,7 +112,7 @@ struct ClipboardTextInserterTests {
 
         let inserter = ClipboardTextInserter(
             restoreDelay: .milliseconds(10),
-            pasteboard: pasteboard,
+            pasteboard: PasteboardHandle(pasteboard: pasteboard),
             pasteStep: pasteStep,
             secureInputCheck: { false }
         )
@@ -139,7 +139,7 @@ struct ClipboardTextInserterTests {
 
         let inserter = ClipboardTextInserter(
             restoreDelay: .milliseconds(10),
-            pasteboard: pasteboard,
+            pasteboard: PasteboardHandle(pasteboard: pasteboard),
             pasteStep: pasteStep,
             secureInputCheck: { false }
         )
@@ -158,7 +158,7 @@ struct ClipboardTextInserterTests {
 
         let inserter = ClipboardTextInserter(
             restoreDelay: .milliseconds(30),
-            pasteboard: pasteboard,
+            pasteboard: PasteboardHandle(pasteboard: pasteboard),
             pasteStep: FakePasteStep(pasteboard: pasteboard),
             secureInputCheck: { false }
         )

@@ -3,15 +3,24 @@ import Carbon.HIToolbox
 import CiceroKit
 import Foundation
 
-// NSPasteboard predates strict-concurrency auditing and isn't marked Sendable,
-// but it is, in practice, a lightweight handle to a system-wide pasteboard
-// server — its state doesn't live in unprotected local mutable storage the
-// way an un-audited type's usually does, and passing the same handle between
-// an actor and its caller (as the tests below do, and as `insert` itself
-// does against `.general`) is the ordinary way to use it. `@unchecked` here
-// asserts that judgment call once, in one place, rather than scattering
-// isolation workarounds through every call site.
-extension NSPasteboard: @unchecked @retroactive Sendable {}
+/// Confines the `NSPasteboard` concurrency assertion to a type we own.
+///
+/// `NSPasteboard` predates strict-concurrency auditing and is not `Sendable`,
+/// yet handing one to `ClipboardTextInserter` means crossing into an actor.
+/// A `@retroactive Sendable` conformance on `NSPasteboard` itself would have
+/// been module-wide and *exported*: every importer of `CiceroInput` would
+/// silently lose the compiler's data-race diagnostic for a system type we do
+/// not own, and a future SDK declaring that conformance would turn this into
+/// a hard build error. A wrapper asserts the same thing about one type we do
+/// own, and exports nothing.
+///
+/// What makes the assertion hold here: access is serialised by
+/// `ClipboardTextInserter`'s FIFO mutex and ordered by its awaits.
+/// `NSPasteboard` itself is not documented as thread-safe, so concurrent use
+/// from several isolation domains would not be covered by this.
+struct PasteboardHandle: @unchecked Sendable {
+    let pasteboard: NSPasteboard
+}
 
 /// Inserts text into the frontmost app by briefly borrowing the clipboard and
 /// posting a synthetic ⌘V.
@@ -39,7 +48,7 @@ public actor ClipboardTextInserter: TextInserter {
     }
 
     private let restoreDelay: Duration
-    private let pasteboard: NSPasteboard
+    private let handle: PasteboardHandle
     private let pasteStep: PasteStep
     private let secureInputCheck: @Sendable () -> Bool
 
@@ -52,7 +61,7 @@ public actor ClipboardTextInserter: TextInserter {
 
     public init(restoreDelay: Duration = .milliseconds(180)) {
         self.init(restoreDelay: restoreDelay,
-                  pasteboard: .general,
+                  pasteboard: PasteboardHandle(pasteboard: .general),
                   pasteStep: SystemPasteStep(),
                   secureInputCheck: { ClipboardTextInserter.isSecureInputActive })
     }
@@ -61,11 +70,11 @@ public actor ClipboardTextInserter: TextInserter {
     /// paste step that never posts real key events, and force the
     /// secure-input branch without depending on real system state.
     init(restoreDelay: Duration,
-         pasteboard: NSPasteboard,
+         pasteboard: PasteboardHandle,
          pasteStep: PasteStep,
          secureInputCheck: @escaping @Sendable () -> Bool = { ClipboardTextInserter.isSecureInputActive }) {
         self.restoreDelay = restoreDelay
-        self.pasteboard = pasteboard
+        self.handle = pasteboard
         self.pasteStep = pasteStep
         self.secureInputCheck = secureInputCheck
     }
@@ -84,6 +93,7 @@ public actor ClipboardTextInserter: TextInserter {
             throw CiceroError.insertionBlockedBySecureInput
         }
 
+        let pasteboard = handle.pasteboard
         let snapshot = Self.snapshot(of: pasteboard)
 
         pasteboard.clearContents()
