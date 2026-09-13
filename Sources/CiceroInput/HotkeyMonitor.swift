@@ -16,7 +16,7 @@ public final class HotkeyMonitor {
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var isHeld = false
+    private var pressState = HotkeyPressState()
 
     public init(hotkey: Hotkey = .defaultHotkey,
                 onPress: @escaping @MainActor () -> Void,
@@ -43,7 +43,9 @@ public final class HotkeyMonitor {
                 return MainActor.assumeIsolated { monitor.handle(type: type, event: event) }
             },
             userInfo: context) else {
-            // tapCreate returns nil precisely when Accessibility is not granted.
+            // tapCreate returns nil when Accessibility permission has not been
+            // granted — the realistic cause at a correctly-formed call site
+            // like this one, though the API can return nil for other reasons too.
             throw CiceroError.accessibilityNotGranted
         }
 
@@ -64,13 +66,16 @@ public final class HotkeyMonitor {
         }
         tap = nil
         runLoopSource = nil
-        isHeld = false
+        pressState = HotkeyPressState()
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // macOS disables a tap that takes too long; re-enable and move on.
+        // macOS disables a tap that takes too long; re-enable it. Any key-up
+        // that happened during the dead window never reached us, so drop the
+        // held state rather than silently eating the next press.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            pressState.tapReenabled()
             return Unmanaged.passUnretained(event)
         }
 
@@ -79,20 +84,20 @@ public final class HotkeyMonitor {
             return Unmanaged.passUnretained(event)
         }
 
+        let action: HotkeyPressState.Action
         switch type {
         case .keyDown:
-            // Key repeat fires keyDown continuously while held; only the first matters.
-            if !isHeld {
-                isHeld = true
-                onPress()
-            }
+            action = pressState.keyDown()
         case .keyUp:
-            if isHeld {
-                isHeld = false
-                onRelease()
-            }
+            action = pressState.keyUp()
         default:
             return Unmanaged.passUnretained(event)
+        }
+
+        switch action {
+        case .press: onPress()
+        case .release: onRelease()
+        case .none: break
         }
 
         // Swallow the event so the hotkey does not reach the focused app.
