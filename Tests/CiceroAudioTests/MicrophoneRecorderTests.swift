@@ -19,10 +19,15 @@ struct MicrophoneRecorderTests {
         #expect(buffer.sampleRate == 16_000)
         #expect(buffer.duration > 0.5)
         #expect(buffer.duration < 2.0)
-        // Depends on the room not being perfectly silent during the 1s capture
-        // above. If this fails in an otherwise-working environment, check
-        // whether the machine was actually silent — it isn't proof of a bug.
-        #expect(!buffer.isSilent(), "captured buffer is silent — either the room was silent during the test, or audio capture is producing empty/garbage samples")
+        // Proves the capture path produced real samples rather than zeros or
+        // garbage — a downmix or conversion fault yields an all-zero or constant
+        // buffer. Deliberately far below AudioBuffer.isSilent()'s 0.01 default,
+        // which is tuned for "speech vs. silence" and made this test fail in a
+        // quiet room on perfectly correct behavior (measured RMS ~0.0083–0.0095
+        // on this machine's real, quiet-room captures — see the report for the
+        // full measurement).
+        #expect(!buffer.isSilent(threshold: 0.0001),
+                "buffer de captura sem sinal algum — a conversão de áudio pode estar produzindo zeros")
     }
 
     @Test("stopping without starting throws", .tags(.requiresMicrophone))
