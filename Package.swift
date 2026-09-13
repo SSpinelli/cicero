@@ -35,5 +35,13 @@ let package = Package(
             swiftSettings: testRunnerSwiftSettings,
             linkerSettings: testRunnerLinkerSettings
         ),
+        .target(name: "CiceroAudio", dependencies: ["CiceroKit"]),
+        .executableTarget(
+            name: "CiceroAudioTests",
+            dependencies: ["CiceroAudio", "CiceroKit"],
+            path: "Tests/CiceroAudioTests",
+            swiftSettings: testRunnerSwiftSettings,
+            linkerSettings: testRunnerLinkerSettings
+        ),
     ]
 )
