@@ -41,6 +41,10 @@ final class HUDWindow {
         /// Matches `HUDView`'s bar count: fewer readings than bars would leave
         /// a permanently flat stretch on the left.
         static let barCount = 18
+        /// A reading arrives per hardware buffer — 4096 frames at 48 kHz, so
+        /// roughly every 85 ms. This is several of those, so that landing
+        /// between two buffers is never mistaken for silence.
+        static let quietBeforeSettling: Duration = .milliseconds(300)
     }
 
     init() {
@@ -95,6 +99,11 @@ final class HUDWindow {
             view.accent = Palette.laurelOnDark
             view.tintsCaption = false
             target = 0
+            // Start empty: the tail of the previous dictation is not this one's
+            // voice, and leaving it would open the pill mid-waveform.
+            levels = []
+            lastLevelAt = nil
+            view.levels = []
         case .transcribing, .polishing, .inserting:
             view.caption = caption(for: state)
             view.accent = Palette.laurelOnDark
@@ -162,18 +171,41 @@ final class HUDWindow {
             view.close += delta * 0.18
         }
 
-        // Let the drawn voice fall away when no audio is arriving, so a paused
-        // speaker sees the bars settle instead of freezing mid-shout.
         guard view.caption == nil else { return }
-        if !levels.isEmpty {
-            levels = levels.map { $0 * 0.82 }
-            view.levels = levels
+
+        // The bars are a scrolling history of the voice: each one keeps the
+        // value it was given and moves left as newer readings arrive. Decaying
+        // them while readings are still coming in destroys that history —
+        // readings arrive at about 12 Hz and this timer runs at 30, so every
+        // bar was multiplied by roughly 0.6 per position it had scrolled.
+        // Four positions back that is 0.13, which draws at the resting minimum:
+        // a flat line with only the newest two or three bars twitching.
+        //
+        // Settling is for audio that has actually stopped, so it waits for a
+        // gap several buffers long rather than firing between two of them.
+        if let lastLevelAt,
+           ContinuousClock.now - lastLevelAt < Metrics.quietBeforeSettling {
+            return
         }
+
+        guard !levels.isEmpty else { return }
+        levels = levels.map { $0 * 0.82 }
+        // Once they have settled, drop them entirely rather than redrawing
+        // imperceptible fractions thirty times a second forever.
+        if levels.allSatisfy({ $0 < 0.01 }) {
+            levels = []
+        }
+        view.levels = levels
     }
 
     private var levels: [CGFloat] = []
 
+    /// When the last loudness reading arrived, so `tick()` can tell a pause in
+    /// the audio from the gap between two buffers.
+    private var lastLevelAt: ContinuousClock.Instant?
+
     private func append(level: CGFloat) {
+        lastLevelAt = ContinuousClock.now
         levels.append(level)
         if levels.count > Metrics.barCount {
             levels.removeFirst(levels.count - Metrics.barCount)
