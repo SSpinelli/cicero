@@ -85,8 +85,10 @@ public actor WhisperKitTranscriber: Transcriber {
             task = newTask
         }
 
+        let began = Date()
         do {
             let loaded = try await task.value
+            ciceroLog.notice("prepare: modelo pronto em \(Date().timeIntervalSince(began), format: .fixed(precision: 1))s")
             whisperKit = loaded
             loadTask = nil
         } catch {

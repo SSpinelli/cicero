@@ -75,10 +75,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let hud = HUDWindow()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !anotherInstanceIsRunning() else { return }
         setUpStatusItem()
         buildEngine()
         Task { await requestPermissionsAndStart() }
         Task { await loadModel() }
+    }
+
+    /// Quits immediately if Cicero is already running, and says so in the log.
+    ///
+    /// A second copy is not merely redundant here, it is actively harmful: two
+    /// identical laurel glyphs appear in the menu bar with nothing to tell them
+    /// apart, two event taps compete for the same hotkey so which one answers
+    /// is arbitrary, and two ~1.5 GB models sit in memory at once. This cost a
+    /// full debugging session — a stale build and a fresh one ran side by side,
+    /// the stale one answered the hotkey, and its behaviour was attributed to
+    /// the fresh one for some time.
+    ///
+    /// Matching is by bundle identifier, so this also catches the case that
+    /// caused that confusion: the same app launched from two different paths,
+    /// such as a development build alongside an installed one.
+    private func anotherInstanceIsRunning() -> Bool {
+        guard let identifier = Bundle.main.bundleIdentifier else { return false }
+        let others = NSRunningApplication
+            .runningApplications(withBundleIdentifier: identifier)
+            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        guard let existing = others.first else { return false }
+
+        ciceroLog.notice("encerrando: o Cicero já está em execução (pid \(existing.processIdentifier))")
+        existing.activate()
+        NSApp.terminate(nil)
+        return true
     }
 
     /// A best-effort retry point, not the guaranteed one: activation of an
