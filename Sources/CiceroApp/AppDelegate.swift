@@ -288,8 +288,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setUpStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "laurel.leading", accessibilityDescription: "Cicero")
-        item.button?.image?.isTemplate = true
+        item.button?.image = MenuBarIcon.image()
+        item.button?.image?.accessibilityDescription = "Cicero"
         let menu = NSMenu()
         menu.delegate = self
         item.menu = menu
