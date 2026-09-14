@@ -66,4 +66,22 @@ else
     echo "    senão você terá que reconceder a permissão de Acessibilidade a cada build."
 fi
 
+# O guard de instância única do app faz a cópia NOVA sair quando já há uma
+# rodando — o comportamento certo em uso normal, e exatamente o errado depois de
+# um build: você roda `open dist/Cicero.app`, o binário recém-assinado encerra em
+# silêncio, e o que responde ao atalho continua sendo o build velho. Não há
+# janela nem ícone no Dock para denunciar isso, e o app que sobrevive é o que
+# tem o código antigo. Isso já contaminou três sessões de diagnóstico neste
+# projeto, com comportamento de build obsoleto atribuído a código novo.
+#
+# Encerrar aqui, depois de o build ter dado certo, garante a invariante: ao
+# terminar o bundle.sh, nenhuma instância obsoleta está no ar. Um build que
+# falha aborta antes desta linha e deixa o app em execução intocado.
+#
+# O executável se chama CiceroApp, não Cicero — `pkill -x Cicero` não casa com
+# nada e silenciosamente não faz coisa alguma.
+if pkill -x CiceroApp 2>/dev/null; then
+    echo "==> Encerrada a instância anterior (o build novo sairia sozinho se ela continuasse no ar)"
+fi
+
 echo "==> Pronto: $APP"
