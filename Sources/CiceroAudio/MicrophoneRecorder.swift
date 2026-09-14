@@ -246,20 +246,29 @@ public actor MicrophoneRecorder: AudioRecorder {
     }
 
     private func teardown() async {
-        guard case .running(let session) = phase else { return }
+        guard case .running(let session) = phase else {
+            ciceroLog.notice("teardown: fase nao era .running, no-op")
+            return
+        }
+        ciceroLog.notice("teardown: inicio")
         // Claim `.stopping` synchronously before the (possibly slow) engine
         // teardown so this phase is visible to anything consulting it while
         // we're mid-teardown, same reasoning as `.starting` above.
         let stoppingTask = Task {
+            ciceroLog.notice("teardown: parando engine de audio")
             await Self.stopEngine(session.engine)
+            ciceroLog.notice("teardown: engine parado")
             session.continuation.finish()
+            ciceroLog.notice("teardown: stream finalizado, aguardando consumidora")
             // Wait for the consumer to drain every buffer already yielded
             // before this method returns, so `stop()` never reads `samples`
             // with trailing audio still in flight.
             await session.consumer.value
+            ciceroLog.notice("teardown: consumidora drenou tudo")
         }
         phase = .stopping(stoppingTask)
         await stoppingTask.value
+        ciceroLog.notice("teardown: concluido")
         phase = .idle
     }
 

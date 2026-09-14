@@ -29,7 +29,7 @@ struct DictationEngineErrorTests {
         #expect(engine.state == .idle)
     }
 
-    @Test("silent audio inserts nothing and returns to idle")
+    @Test("silent audio inserts nothing and says so")
     func silentAudioInsertsNothing() async {
         let inserter = FakeInserter()
         let engine = makeEngine(
@@ -38,17 +38,27 @@ struct DictationEngineErrorTests {
         await engine.startDictation()
         await engine.finishDictation()
         #expect(inserter.inserted.value.isEmpty)
-        #expect(engine.state == .idle)
+        // Not `.idle`: returning silently is indistinguishable from a crash
+        // for someone who just spoke and is waiting for text.
+        guard case .failed(let message) = engine.state else {
+            Issue.record("esperava .failed, veio \(engine.state)")
+            return
+        }
+        #expect(message.contains("Não ouvi nada"))
     }
 
-    @Test("a blank transcript inserts nothing")
+    @Test("a blank transcript inserts nothing and says so")
     func blankTranscriptInsertsNothing() async {
         let inserter = FakeInserter()
         let engine = makeEngine(transcriber: FakeTranscriber(result: "   \n "), inserter: inserter)
         await engine.startDictation()
         await engine.finishDictation()
         #expect(inserter.inserted.value.isEmpty)
-        #expect(engine.state == .idle)
+        guard case .failed(let message) = engine.state else {
+            Issue.record("esperava .failed, veio \(engine.state)")
+            return
+        }
+        #expect(message.contains("Não consegui entender"))
     }
 
     @Test("transcription failure surfaces a message and returns to a startable state")
