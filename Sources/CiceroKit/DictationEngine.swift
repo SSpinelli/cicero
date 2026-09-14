@@ -1,5 +1,10 @@
 import Foundation
 import Observation
+import os
+
+/// Diagnostic trail for a menu bar app that has no console. Read it with:
+/// `log show --predicate 'subsystem == "br.com.cicero"' --last 10m --style compact`
+public let ciceroLog = Logger(subsystem: "br.com.cicero", category: "dictation")
 
 /// Orchestrates one dictation: record, transcribe, polish, insert.
 ///
@@ -129,17 +134,31 @@ public final class DictationEngine {
         guard isCurrent(myGeneration), state == .recording, !isCancelling else { return }
         state = .transcribing
         do {
+            ciceroLog.notice("finish: pedindo recorder.stop()")
             let audio = try await recorder.stop()
+            let rms = (audio.samples.reduce(Float(0)) { $0 + $1 * $1 } / Float(max(audio.samples.count, 1))).squareRoot()
+            let peak = audio.samples.reduce(Float(0)) { Swift.max($0, Swift.abs($1)) }
+            ciceroLog.notice("finish: recorder parou, \(audio.samples.count) amostras, \(audio.duration, format: .fixed(precision: 2))s, RMS \(rms, format: .fixed(precision: 4)), pico \(peak, format: .fixed(precision: 3))")
             guard isCurrent(myGeneration) else { return }
             // A hotkey brushed by accident must insert nothing.
             guard !audio.isSilent() else {
-                state = .idle
+                // Say so rather than returning to `.idle` in silence. The user
+                // held the key and spoke into something; "nothing happened" is
+                // indistinguishable from a crash from where they are sitting.
+                ciceroLog.notice("finish: audio silencioso, nada a fazer")
+                state = .failed("Não ouvi nada. O microfone está mudo ou muito distante?")
                 return
             }
+            ciceroLog.notice("finish: chamando transcribe()")
             let raw = try await transcriber.transcribe(audio)
+            ciceroLog.notice("finish: transcrito, \(raw.count) caracteres")
             guard isCurrent(myGeneration) else { return }
             guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                state = .idle
+                // Audio had signal but the model returned nothing. Silently
+                // idling here is the worst outcome available: the user waited,
+                // said something, and gets neither text nor an explanation.
+                ciceroLog.notice("finish: transcricao vazia apesar de audio com sinal")
+                state = .failed("Não consegui entender o que você disse. Tente de novo.")
                 return
             }
             state = .polishing
