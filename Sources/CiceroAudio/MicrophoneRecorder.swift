@@ -22,6 +22,31 @@ public actor MicrophoneRecorder: AudioRecorder {
 
     private var samples: [Float] = []
 
+    /// A live loudness reading per captured buffer, roughly 0...1, for drawing
+    /// the voice while the user speaks.
+    ///
+    /// Deliberately *not* on the `AudioRecorder` port: the dictation engine has
+    /// no use for levels, and widening a port so one UI can draw something
+    /// would make every future recorder implement it for nothing. The
+    /// composition root already holds this type concretely and wires it to the
+    /// HUD itself.
+    ///
+    /// Single-consumer, like any `AsyncStream`. Values are dropped rather than
+    /// buffered when nobody is listening, so a recording with no HUD attached
+    /// costs nothing.
+    public nonisolated let levels: AsyncStream<Float>
+    private nonisolated let levelContinuation: AsyncStream<Float>.Continuation
+
+    /// Root mean square of a buffer, scaled so ordinary speech lands in the
+    /// upper half of 0...1. Speech measures around 0.04 RMS at a normal
+    /// distance from a laptop microphone — a bar chart drawn on the raw value
+    /// would be a flat line.
+    private nonisolated static func loudness(of chunk: [Float]) -> Float {
+        guard !chunk.isEmpty else { return 0 }
+        let mean = chunk.reduce(Float(0)) { $0 + $1 * $1 } / Float(chunk.count)
+        return min(1, mean.squareRoot() * 12)
+    }
+
     /// Where the recorder is in its lifecycle, claimed *synchronously* by
     /// `start()`/`stop()`/`cancel()` before their first `await`. This actor is
     /// reentrant — any `await` is a point where another call can interleave —
@@ -55,7 +80,14 @@ public actor MicrophoneRecorder: AudioRecorder {
 
     private var phase: Phase = .idle
 
-    public init() {}
+    public init() {
+        // Dropping the oldest reading keeps the drawn voice current: a HUD that
+        // fell behind should skip ahead, not replay a backlog of stale levels.
+        let (stream, continuation) = AsyncStream<Float>.makeStream(
+            bufferingPolicy: .bufferingNewest(8))
+        levels = stream
+        levelContinuation = continuation
+    }
 
     /// Best-effort safety net for the case `stop()`/`cancel()` were never
     /// called at all — the owner (e.g. `DictationEngine`) was itself
@@ -138,8 +170,13 @@ public actor MicrophoneRecorder: AudioRecorder {
 
         let sessionEngine = AVAudioEngine()
         let (stream, continuation) = AsyncStream<[Float]>.makeStream()
+        let levels = levelContinuation
         let appendSamples: @Sendable ([Float]) -> Void = { chunk in
             continuation.yield(chunk)
+            // Publish the loudness of this buffer for anything drawing the
+            // voice. Computed here rather than by the consumer so the UI never
+            // has to touch the samples themselves.
+            levels.yield(Self.loudness(of: chunk))
         }
 
         let task = Task<StartOutcome, Never> { [weak self] in

@@ -73,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var actionTask: Task<Void, Never>?
 
     private let hud = HUDWindow()
+    private let recorder = MicrophoneRecorder()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !anotherInstanceIsRunning() else { return }
@@ -124,6 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Composition
 
     private func buildEngine() {
+        // Held concretely rather than as `any AudioRecorder` so the HUD can
+        // draw the voice: `levels` is deliberately off the port, since the
+        // dictation engine has no use for it and widening the port would make
+        // every future recorder carry it for one view's benefit.
+        hud.drawVoice(from: recorder.levels)
+
         // The polisher is chosen once at launch: Apple's on-device model when
         // available, otherwise raw text still reaches the user.
         // Written as if/else rather than a ternary because the two branches
@@ -136,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let engine = DictationEngine(
-            recorder: MicrophoneRecorder(),
+            recorder: recorder,
             transcriber: transcriber,
             polisher: polisher,
             inserter: ClipboardTextInserter(),

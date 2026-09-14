@@ -58,7 +58,7 @@ struct DictationEngineErrorTests {
             Issue.record("esperava .failed, veio \(engine.state)")
             return
         }
-        #expect(message.contains("Não consegui entender"))
+        #expect(message.contains("Não entendi"))
     }
 
     @Test("transcription failure surfaces a message and returns to a startable state")
