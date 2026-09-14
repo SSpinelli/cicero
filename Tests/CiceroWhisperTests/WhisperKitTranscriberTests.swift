@@ -62,9 +62,33 @@ struct WhisperKitTranscriberTests {
         #expect(text.lowercased().contains("brown fox"))
     }
 
+    /// Pinning the language is what keeps short dictations honest.
+    ///
+    /// Measured against a two-second recording of "O rato roeu a roupa do rei
+    /// de Roma": with `language: nil` WhisperKit returned "The rat ruined the
+    /// King of Rome's clothes." five times out of five, while `language: "pt"`
+    /// returned the sentence exactly, three times out of three. Auto-detection
+    /// reads one window, and on a clip this short it picks the wrong language;
+    /// Whisper then conditions its decoder on that token and generates text in
+    /// that language. The user sees a translation, or Portuguese containing
+    /// words they never said.
+    @Test("transcreve português sem traduzir para inglês", .tags(.requiresModel), .timeLimit(.minutes(10)))
+    func doesNotTranslateToEnglish() async throws {
+        let transcriber = WhisperKitTranscriber(language: "pt")
+        try await transcriber.prepare()
+        let audio = try spokenAudio("O rato roeu a roupa do rei de Roma.", voice: "Luciana")
+        let text = try await transcriber.transcribe(audio).lowercased()
+        print("PT PINNED: \(text)")
+        #expect(text.contains("rato"))
+        #expect(text.contains("roeu"))
+        // The English paraphrase auto-detection produced for this sentence.
+        #expect(!text.contains("ruined"))
+        #expect(!text.contains("the rat"))
+    }
+
     @Test("transcribes spoken Portuguese", .tags(.requiresModel), .timeLimit(.minutes(10)))
     func transcribesPortuguese() async throws {
-        let transcriber = WhisperKitTranscriber()
+        let transcriber = WhisperKitTranscriber(language: "pt")
         try await transcriber.prepare()
         let text = try await transcriber.transcribe(try spokenAudio("O rato roeu a roupa do rei.", voice: "Luciana"))
         // See the comment on the English test above for why this is printed.

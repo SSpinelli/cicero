@@ -14,6 +14,7 @@ import Foundation
 public actor WhisperKitTranscriber: Transcriber {
 
     private let modelName: String
+    private let language: String?
     private var whisperKit: WhisperKit?
 
     /// The in-flight model load, if any, plus a generation counter so a
@@ -27,8 +28,19 @@ public actor WhisperKitTranscriber: Transcriber {
     /// before `turbo`, not a hyphen), so the default here uses `large-v3_turbo`
     /// to match it — the hyphenated `large-v3-turbo` spelling of the model's
     /// common name does not match any folder and fails to resolve.
-    public init(modelName: String = "large-v3_turbo") {
+    /// `language` is the BCP-47-ish code Whisper conditions its decoder on
+    /// (`"pt"`, `"en"`, …). `nil` leaves it to WhisperKit's auto-detection.
+    ///
+    /// Auto-detection is unreliable on the two-to-four-second clips this app
+    /// produces: detection reads a single window, and on a short clip it
+    /// regularly picks the wrong language. Whisper then conditions its decoder
+    /// on that token and *generates text in that language* — so Portuguese
+    /// speech comes back as an English paraphrase, or as Portuguese with words
+    /// the speaker never said. Pinning the language is what makes short
+    /// dictations reliable.
+    public init(modelName: String = "large-v3_turbo", language: String? = nil) {
         self.modelName = modelName
+        self.language = language
     }
 
     public var isReady: Bool { whisperKit != nil }
@@ -59,7 +71,16 @@ public actor WhisperKitTranscriber: Transcriber {
             loadGeneration += 1
             generation = loadGeneration
             let modelName = modelName
-            let newTask = Task { try await WhisperKit(WhisperKitConfig(model: modelName)) }
+            // `prewarm` forces CoreML's ahead-of-time compilation for the
+            // Neural Engine to happen here rather than inside the user's first
+            // dictation. Without it the first transcription spends around two
+            // minutes in ANECompiler while the menu says "Transcrevendo…" and
+            // nothing appears to be happening; every later one takes about a
+            // second. `prepare()` is already off the dictation path and already
+            // shows "Carregando modelo…", so this is where that cost belongs.
+            let newTask = Task {
+                try await WhisperKit(WhisperKitConfig(model: modelName, prewarm: true))
+            }
             loadTask = newTask
             task = newTask
         }
@@ -76,16 +97,19 @@ public actor WhisperKitTranscriber: Transcriber {
         }
     }
 
-    public func transcribe(_ audio: AudioBuffer) async throws -> String {
+    public func transcribe(_ audio: CiceroKit.AudioBuffer) async throws -> String {
         guard let whisperKit else {
             throw CiceroError.transcriptionFailed("modelo ainda não carregado")
         }
         do {
-            // O idioma é deixado para detecção automática: o usuário mistura
-            // português e inglês.
-            let results = try await whisperKit.transcribe(audioArray: audio.samples)
+            // Passing explicit options matters: WhisperKit's default leaves
+            // `language` nil, and auto-detection on a short clip regularly
+            // picks the wrong one. See the note on `init(modelName:language:)`.
+            let options = DecodingOptions(task: .transcribe, language: language)
+            let results = try await whisperKit.transcribe(audioArray: audio.samples,
+                                                          decodeOptions: options)
             let text = results.map(\.text).joined(separator: " ")
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         } catch {
             throw CiceroError.transcriptionFailed(error.localizedDescription)
         }

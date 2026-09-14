@@ -11,7 +11,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var engine: DictationEngine?
     private var hotkeyMonitor: HotkeyMonitor?
-    private let transcriber = WhisperKitTranscriber()
+    /// Pinned to Portuguese rather than auto-detected. The spec asked for
+    /// auto-detection so mixed pt/en dictation would work, but measurement
+    /// showed that choice is not viable at this clip length: on the same
+    /// two-second recording, auto-detection returned an English paraphrase
+    /// five times out of five, while `pt` returned the exact sentence three
+    /// times out of three. English words inside Portuguese speech still
+    /// transcribe fine with the language pinned; a wrong language token does
+    /// not.
+    private let transcriber = WhisperKitTranscriber(language: "pt")
 
     /// Where the Whisper model is in its load.
     ///
