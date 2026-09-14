@@ -158,7 +158,10 @@ public final class DictationEngine {
                 // idling here is the worst outcome available: the user waited,
                 // said something, and gets neither text nor an explanation.
                 ciceroLog.notice("finish: transcricao vazia apesar de audio com sinal")
-                state = .failed("Não consegui entender o que você disse. Tente de novo.")
+                // Headline first, detail second: the HUD is a four-second
+                // glance and shows only the opening sentence, while the menu
+                // bar has room for the whole thing.
+                state = .failed("Não entendi. Fale um pouco mais perto do microfone e tente de novo.")
                 return
             }
             state = .polishing
